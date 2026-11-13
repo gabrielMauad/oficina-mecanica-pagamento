@@ -1,0 +1,8 @@
+**/.git
+**/bin
+**/obj
+**/*.user
+**/.vs
+**/TestResults
+**/coverage-results
+**/coverage-report

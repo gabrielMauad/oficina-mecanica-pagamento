@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\SharedKernel\SharedKernel.Application\SharedKernel.Application.csproj" />
+    <ProjectReference Include="..\..\..\Contracts\OficinaMecanica.Contracts\OficinaMecanica.Contracts.csproj" />
+    <ProjectReference Include="..\Pagamento.Domain\Pagamento.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

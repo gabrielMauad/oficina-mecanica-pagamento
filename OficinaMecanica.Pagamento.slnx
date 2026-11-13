@@ -1,0 +1,31 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/Bootstrap/">
+    <Project Path="src/Bootstrap/Api/Api.csproj" />
+  </Folder>
+  <Folder Name="/src/Contracts/">
+    <Project Path="src/Contracts/OficinaMecanica.Contracts/OficinaMecanica.Contracts.csproj" />
+  </Folder>
+  <Folder Name="/src/Modules/" />
+  <Folder Name="/src/Modules/Pagamento/">
+    <Project Path="src/Modules/Pagamento/Pagamento.Adapters/Pagamento.Adapters.csproj" />
+    <Project Path="src/Modules/Pagamento/Pagamento.Application/Pagamento.Application.csproj" />
+    <Project Path="src/Modules/Pagamento/Pagamento.Domain/Pagamento.Domain.csproj" />
+    <Project Path="src/Modules/Pagamento/Pagamento.Infrastructure/Pagamento.Infrastructure.csproj" />
+    <Project Path="src/Modules/Pagamento/Pagamento.Web/Pagamento.Web.csproj" />
+  </Folder>
+  <Folder Name="/src/SharedKernel/">
+    <Project Path="src/SharedKernel/SharedKernel.Application/SharedKernel.Application.csproj" />
+    <Project Path="src/SharedKernel/SharedKernel.Domain/SharedKernel.Domain.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/IntegrationTests/IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Modules/" />
+  <Folder Name="/tests/Modules/Pagamento/">
+    <Project Path="tests/Modules/Pagamento/Pagamento.Adapters.Tests/Pagamento.Adapters.Tests.csproj" />
+    <Project Path="tests/Modules/Pagamento/Pagamento.Application.Tests/Pagamento.Application.Tests.csproj" />
+    <Project Path="tests/Modules/Pagamento/Pagamento.Domain.Tests/Pagamento.Domain.Tests.csproj" />
+    <Project Path="tests/Modules/Pagamento/Pagamento.Infrastructure.Tests/Pagamento.Infrastructure.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pagamento.Infrastructure.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AWSSDK.DynamoDBv2" Version="4.0.110.3" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
+    <PackageReference Include="MassTransit" Version="8.5.12" />
+    <PackageReference Include="MassTransit.AmazonSQS" Version="8.5.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Contracts\OficinaMecanica.Contracts\OficinaMecanica.Contracts.csproj" />
+    <ProjectReference Include="..\..\..\SharedKernel\SharedKernel.Application\SharedKernel.Application.csproj" />
+    <ProjectReference Include="..\Pagamento.Adapters\Pagamento.Adapters.csproj" />
+    <ProjectReference Include="..\Pagamento.Application\Pagamento.Application.csproj" />
+    <ProjectReference Include="..\Pagamento.Domain\Pagamento.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

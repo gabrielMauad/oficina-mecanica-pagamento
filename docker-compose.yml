@@ -1,0 +1,57 @@
+# Serviço pagamento. Sem banco próprio no compose: a tabela do DynamoDB fica no LocalStack
+# compartilhado e o próprio serviço a cria na partida (DynamoDb__CriarTabelaSeNaoExistir).
+#
+# Depende do docker-compose.infra.yml do repositório oficina-mecanica-app, que cria a rede Docker
+# externa "oficina-local" e sobe o LocalStack (SQS/SNS/DynamoDB, container oficina-localstack) e o
+# Jaeger (container oficina-jaeger). Ordem de subida:
+#   1. no repositório oficina-mecanica-app:  docker compose -f docker-compose.infra.yml up -d
+#   2. neste repositório:                    docker compose up --build
+#
+# API em http://localhost:8084 (Scalar em /scalar). O mock do Mercado Pago responde no próprio
+# serviço, em /mock/mercadopago.
+services:
+  oficina-pagamento:
+    build:
+      context: .
+      dockerfile: src/Bootstrap/Api/Dockerfile
+    container_name: oficina-pagamento
+    ports:
+      - "8084:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      - Jwt__Secret=docker-dev-secret-key-replace-in-prod-000
+      - Jwt__Audience=oficina-mecanica-api
+      - Jwt__ValidIssuers__0=oficina-mecanica-app
+      - Jwt__ValidIssuers__1=oficina-mecanica-auth
+      - OpenApi__Enabled=true
+      # Mensageria (MassTransit sobre Amazon SQS/SNS) apontando para o LocalStack da rede oficina-local.
+      - Mensageria__Transporte=AmazonSqs
+      - Mensageria__Regiao=us-east-1
+      - Mensageria__ServiceUrl=http://oficina-localstack:4566
+      - Mensageria__AccessKey=test
+      - Mensageria__SecretKey=test
+      # DynamoDB no mesmo LocalStack. As credenciais vêm da cadeia padrão do SDK (variáveis AWS_*), como na
+      # AWS (lá, a role do nó); aqui são as chaves de teste do LocalStack.
+      - DynamoDb__ServiceUrl=http://oficina-localstack:4566
+      - DynamoDb__Regiao=us-east-1
+      - DynamoDb__TabelaPagamentos=oficina-mecanica-dev-pagamentos
+      - DynamoDb__CriarTabelaSeNaoExistir=true
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      # Mock do Mercado Pago: o adapter chama, por HTTP, o próprio serviço (porta 8080 dentro do container).
+      - MercadoPago__BaseUrl=http://localhost:8080/mock/mercadopago
+      - MercadoPago__ClientId=mp-dev-client
+      - MercadoPago__ClientSecret=mp-dev-secret
+      # OTLP: destino configurável por variável de ambiente padrão do OpenTelemetry (ADR-004). Aqui
+      # aponta para o Jaeger compartilhado; em outro ambiente basta trocar o endpoint (e, se preciso,
+      # OTEL_EXPORTER_OTLP_HEADERS) para o coletor/APM real — nenhum código muda. O Jaeger all-in-one
+      # não implementa o serviço OTLP de logs; essas tentativas falham em silêncio.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://oficina-jaeger:4317
+      - OTEL_SERVICE_NAME=oficina-mecanica-pagamento
+    networks:
+      - oficina-local
+
+networks:
+  oficina-local:
+    external: true
