@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pagamento
+  namespace: oficina-mecanica
+  labels:
+    app: pagamento
+    app.kubernetes.io/part-of: oficina-mecanica
+spec:
+  # Com HPA ativo, o numero de replicas passa a ser decidido por ele (12-hpa.yaml); este valor
+  # so vale ate o primeiro ciclo do autoscaler.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pagamento
+  template:
+    metadata:
+      labels:
+        app: pagamento
+    spec:
+      containers:
+        - name: pagamento
+          # Substituido pela pipeline pela URI do ECR com a tag = SHA do commit.
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          # ConfigMap = chaves nao sensiveis; Secret pagamento-secrets = segredo JWT, credenciais
+          # do mock do Mercado Pago e header OTLP, criado pela pipeline a partir do Secrets Manager.
+          envFrom:
+            - configMapRef:
+                name: pagamento-config
+            - secretRef:
+                name: pagamento-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          # Liveness e startup so olham o processo; readiness inclui a tabela do DynamoDB e o
+          # barramento de mensageria. Assim, dependencia indisponivel tira o pod do balanceamento
+          # sem reinicia-lo.
+          startupProbe:
+            httpGet:
+              path: /healthz/live
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3

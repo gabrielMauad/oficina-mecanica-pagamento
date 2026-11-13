@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pagamento-config
+  namespace: oficina-mecanica
+  labels:
+    app: pagamento
+    app.kubernetes.io/part-of: oficina-mecanica
+data:
+  # Production, nao Development: o publish do SDK inclui appsettings.Development.json na imagem,
+  # mas com ASPNETCORE_ENVIRONMENT=Production o ASP.NET Core so carrega appsettings.json (+
+  # appsettings.Production.json, inexistente). Toda configuracao obrigatoria em runtime vem deste
+  # ConfigMap e do Secret pagamento-secrets (criado pela pipeline) - nada de branch por ambiente
+  # no codigo.
+  ASPNETCORE_ENVIRONMENT: "Production"
+  ASPNETCORE_URLS: "http://+:8080"
+  # Validacao do JWT HS256 (segredo compartilhado entre os servicos; o segredo em si vem do
+  # Secret). Este servico so valida tokens - quem emite o token da oficina e o servico de
+  # autenticacao, e o do cliente, a Lambda.
+  Jwt__Audience: "oficina-mecanica-api"
+  Jwt__ValidIssuers__0: "oficina-mecanica-app"
+  Jwt__ValidIssuers__1: "oficina-mecanica-auth"
+  OpenApi__Enabled: "true"
+  # Mensageria (MassTransit sobre Amazon SNS/SQS). Sem ServiceUrl, AccessKey e SecretKey de
+  # proposito: na AWS o SDK resolve as credenciais pela cadeia padrao (role do no do EKS); essas
+  # tres chaves existem so no ambiente local, apontando para o LocalStack.
+  Mensageria__Transporte: "AmazonSqs"
+  Mensageria__Regiao: "us-east-1"
+  # Tabela de pagamentos no DynamoDB, criada pelo Terraform (oficina-mecanica-infra-db). Sem
+  # ServiceUrl: na AWS o SDK usa o endpoint regional e as credenciais da role do no. A criacao da
+  # tabela pelo proprio servico (CriarTabelaSeNaoExistir) e so para o ambiente local e os testes.
+  DynamoDb__TabelaPagamentos: "oficina-mecanica-dev-pagamentos"
+  DynamoDb__Regiao: "us-east-1"
+  DynamoDb__CriarTabelaSeNaoExistir: "false"
+  # O mock do Mercado Pago e servido por este proprio servico (/mock/mercadopago); o adapter o
+  # chama por HTTP no loopback do pod, como chamaria a API real. O client id e o client secret
+  # (que o mock valida) vem do Secret pagamento-secrets.
+  MercadoPago__BaseUrl: "http://localhost:8080/mock/mercadopago"
+  # Nome do servico nos sinais do OpenTelemetry (service.name).
+  OTEL_SERVICE_NAME: "oficina-mecanica-pagamento"
+  # Destino OTLP e o New Relic (data center US), endpoint publico - nao e segredo, so a license
+  # key (OTEL_EXPORTER_OTLP_HEADERS) e, e essa vem do Secret pagamento-secrets, nunca daqui.
+  # Protocolo http/protobuf na porta 4318, nao gRPC/4317: com o endpoint geral (sem variavel por
+  # sinal), o exportador OTLP do .NET anexa /v1/traces, /v1/metrics e /v1/logs por sinal quando o
+  # protocolo e http/protobuf - um unico par de variaveis cobre os tres sinais.
+  OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net:4318"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"

@@ -1,0 +1,273 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# O workflow so le o codigo: nenhum passo escreve no repositorio nem em PRs (a publicacao vai para
+# o ECR e o EKS, autenticada pelas credenciais AWS dos secrets do environment).
+permissions:
+  contents: read
+
+# Um deploy por vez por branch: se outro push chegar durante um deploy em andamento, ele espera
+# na fila em vez de rodar em paralelo (dois "kubectl apply" simultaneos disputariam o mesmo
+# Deployment). Nunca cancela o deploy em andamento, para nao deixar o rollout pela metade.
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: oficina-mecanica
+  API_GATEWAY_NAME: oficina-mecanica-api
+  ECR_REPOSITORY: oficina-mecanica-pagamento
+  SOLUTION: OficinaMecanica.Pagamento.slnx
+
+jobs:
+  # Build, testes com cobertura e analise estatica no SonarCloud. O scanner precisa observar o
+  # build, por isso a ordem e restore -> sonarscanner begin -> build -> test -> sonarscanner end.
+  # Ainda nao ha quality gate bloqueante: o resultado e publicado no SonarCloud, mas a pipeline
+  # nao espera nem falha pelo veredito do gate.
+  #
+  # A analise do SonarCloud e opcional: sem o secret SONAR_TOKEN e as variables SONAR_PROJECT_KEY e
+  # SONAR_ORGANIZATION, restore, build, testes e cobertura rodam normalmente e apenas a analise e
+  # ignorada.
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Historico completo: o SonarCloud usa o blame do git para atribuir codigo novo/antigo.
+          fetch-depth: 0
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Decide uma unica vez se a analise do Sonar roda; os passos do Sonar abaixo dependem de
+      # steps.sonar.outputs.enabled. O token so e entregue a este passo e aos passos do Sonar, via
+      # env - nunca ao restante do job.
+      - name: Detectar configuracao do SonarCloud
+        id: sonar
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ] && [ -n "$SONAR_PROJECT_KEY" ] && [ -n "$SONAR_ORGANIZATION" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SonarCloud nao configurado (secret SONAR_TOKEN e/ou variables SONAR_PROJECT_KEY/SONAR_ORGANIZATION ausentes): analise ignorada; build, testes e cobertura seguem normalmente."
+          fi
+
+      # O scanner do Sonar roda em Java; o runner ubuntu-latest nao garante a versao exigida.
+      - name: Setup Java 17
+        if: steps.sonar.outputs.enabled == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Versao fixa para que o scanner nao mude sozinho entre execucoes.
+      - name: Instalar dotnet-sonarscanner
+        if: steps.sonar.outputs.enabled == 'true'
+        run: dotnet tool install --global dotnet-sonarscanner --version 12.1.0
+
+      - name: Restore
+        run: dotnet restore "${{ env.SOLUTION }}"
+
+      # O token entra por variavel de ambiente (e nao interpolado no script) para nao aparecer na
+      # linha de comando exibida no log. Migrations (codigo gerado) e Program.cs (composicao do
+      # host, coberto apenas pelos testes de integracao) ficam fora do calculo de cobertura.
+      - name: SonarCloud - begin
+        if: steps.sonar.outputs.enabled == 'true'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          dotnet sonarscanner begin \
+            /k:"${{ vars.SONAR_PROJECT_KEY }}" \
+            /o:"${{ vars.SONAR_ORGANIZATION }}" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" \
+            /d:sonar.coverage.exclusions="**/Migrations/**,**/Program.cs"
+
+      - name: Build
+        run: dotnet build "${{ env.SOLUTION }}" --no-restore --configuration Release
+
+      # Cada projeto de teste gera seu coverage.opencover.xml em TestResults/; o Sonar consolida
+      # todos pelo padrao "**/coverage.opencover.xml" configurado acima.
+      - name: Test (com cobertura)
+        run: |
+          dotnet test "${{ env.SOLUTION }}" --no-build --configuration Release --verbosity normal \
+            --collect "XPlat Code Coverage;Format=opencover"
+
+      - name: SonarCloud - end
+        if: steps.sonar.outputs.enabled == 'true'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+
+  # A conta e uma AWS Academy Learner Lab - nao permite IAM role/OIDC, entao autentica com as
+  # tres credenciais de sessao temporarias, renovadas manualmente a cada sessao do laboratorio.
+  # A URL do repositorio ECR e resolvida em runtime (describe-repositories), nunca com a conta
+  # gravada em codigo - ela muda a cada recriacao da infraestrutura (oficina-mecanica-infra-k8s).
+  docker-image:
+    name: Build & Push image (ECR)
+    needs: build-test
+    runs-on: ubuntu-latest
+    environment: aws-academy
+    outputs:
+      image: ${{ steps.image.outputs.uri }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login no Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolver URL do repositorio ECR e a tag da imagem
+        id: image
+        run: |
+          REPO_URI=$(aws ecr describe-repositories \
+            --repository-names "${{ env.ECR_REPOSITORY }}" \
+            --query "repositories[0].repositoryUri" --output text)
+          echo "uri=${REPO_URI}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/Bootstrap/Api/Dockerfile
+          push: true
+          tags: ${{ steps.image.outputs.uri }}
+
+  # Aplica os manifestos de k8s/ contra o cluster EKS persistente (oficina-mecanica-infra-k8s) -
+  # este workflow nao cria infraestrutura nenhuma, so publica este servico nela. O monitoramento
+  # do cluster (nri-bundle, New Relic) e instalado uma unica vez, pela pipeline do ordens-servico.
+  deploy:
+    name: Deploy no EKS
+    needs: docker-image
+    runs-on: ubuntu-latest
+    environment: aws-academy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configurar kubeconfig do cluster EKS
+        run: aws eks update-kubeconfig --name "${{ env.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
+
+      - name: Namespace
+        run: kubectl apply -f k8s/00-namespace.yaml
+
+      # Le o segredo da aplicacao por NOME (nunca ARN - o ARN muda a cada recriacao), monta o Secret
+      # do Kubernetes em runtime e aplica de forma idempotente. Este servico usa DynamoDB (acesso
+      # pela role do no, sem credencial), entao nao le segredo de RDS. Nenhum valor secreto e
+      # impresso no log: cada um recebe ::add-mask:: antes de qualquer outro uso.
+      #
+      # A license key da New Relic NAO vem do Secrets Manager - e um dado de conta de terceiro, nao
+      # um recurso da AWS - e sim direto de um secret do GitHub (NEW_RELIC_LICENSE_KEY) para o
+      # Secret do Kubernetes, sem operador adicional nem IRSA.
+      - name: Criar/atualizar Secret pagamento-secrets
+        env:
+          NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+        run: |
+          # A license key e obrigatoria: sem ela os pods subiriam sem enviar telemetria.
+          [ -n "$NEW_RELIC_LICENSE_KEY" ] || { echo "::error::secret NEW_RELIC_LICENSE_KEY ausente"; exit 1; }
+
+          APP_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id oficina-mecanica/dev/app --query SecretString --output text)
+
+          JWT_SECRET=$(echo "$APP_SECRET" | jq -er .jwt_secret)
+          MP_CLIENT_ID=$(echo "$APP_SECRET" | jq -er .mercadopago_client_id)
+          MP_CLIENT_SECRET=$(echo "$APP_SECRET" | jq -er .mercadopago_client_secret)
+
+          # Mascara apenas segredos: JWT_SECRET, as credenciais do mock do Mercado Pago e a license
+          # key (o header OTLP, que embute a license key, e mascarado abaixo). Valores que nao sao
+          # segredo nao devem ser mascarados, porque trocariam por "***" qualquer trecho igual no
+          # resto do log.
+          for v in "$JWT_SECRET" "$MP_CLIENT_ID" "$MP_CLIENT_SECRET" "$NEW_RELIC_LICENSE_KEY"; do
+            echo "::add-mask::$v"
+          done
+
+          # Formato exigido pelo header OTLP da New Relic: "api-key=<license key>", lido pelo
+          # OTEL_EXPORTER_OTLP_HEADERS.
+          OTLP_HEADERS="api-key=${NEW_RELIC_LICENSE_KEY}"
+          echo "::add-mask::$OTLP_HEADERS"
+
+          kubectl create secret generic pagamento-secrets \
+            --namespace oficina-mecanica \
+            --from-literal=Jwt__Secret="$JWT_SECRET" \
+            --from-literal=MercadoPago__ClientId="$MP_CLIENT_ID" \
+            --from-literal=MercadoPago__ClientSecret="$MP_CLIENT_SECRET" \
+            --from-literal=OTEL_EXPORTER_OTLP_HEADERS="$OTLP_HEADERS" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Aplicar ConfigMap e manifestos do servico
+        run: |
+          kubectl apply -f k8s/01-configmap.yaml
+          sed "s|IMAGE_PLACEHOLDER|${{ needs.docker-image.outputs.image }}|" k8s/10-deployment.yaml | kubectl apply -f -
+          kubectl apply -f k8s/11-service.yaml
+          kubectl apply -f k8s/12-hpa.yaml
+
+      - name: Aguardar rollout
+        run: kubectl rollout status deployment/pagamento -n oficina-mecanica --timeout=5m
+
+      # Descobre o endpoint pelo NOME da API (nunca hardcoded - muda a cada recriacao) e valida a
+      # cadeia inteira: API Gateway -> VPC Link -> NLB -> NodePort -> pod -> DynamoDB. A rota tecnica
+      # /pagamento/{proxy+} reescreve o caminho, entao GET /pagamento/healthz/ready chega ao pod como
+      # GET /healthz/ready. Com retentativas porque a NLB leva alguns minutos apos o deploy para
+      # marcar o alvo como saudavel.
+      - name: Smoke test (GET /pagamento/healthz/ready via API Gateway)
+        run: |
+          API_ENDPOINT=$(aws apigatewayv2 get-apis \
+            --query "Items[?Name=='${{ env.API_GATEWAY_NAME }}'].ApiEndpoint | [0]" \
+            --output text)
+
+          if [ -z "$API_ENDPOINT" ] || [ "$API_ENDPOINT" == "None" ]; then
+            echo "FALHA: nao foi possivel resolver o endpoint da API '${{ env.API_GATEWAY_NAME }}'."
+            exit 1
+          fi
+
+          echo "Endpoint resolvido: $API_ENDPOINT"
+
+          for i in $(seq 1 30); do
+            # Em falha de conexao o curl ja imprime "000" via -w; o "|| true" so evita que o
+            # codigo de saida interrompa o loop (um "|| echo 000" duplicaria para "000000").
+            HTTP_STATUS=$(curl -sS --max-time 15 -o /tmp/healthz.json -w "%{http_code}" "$API_ENDPOINT/pagamento/healthz/ready" || true)
+            if [ "$HTTP_STATUS" == "200" ]; then
+              echo "OK: /pagamento/healthz/ready respondeu 200"
+              cat /tmp/healthz.json; echo
+              exit 0
+            fi
+            echo "Tentativa $i: status $HTTP_STATUS, aguardando a NLB marcar o alvo como saudavel..."
+            sleep 10
+          done
+
+          echo "FALHA: /pagamento/healthz/ready nao respondeu 200 a tempo."
+          exit 1
+
+      - name: Estado do servico (evidencia nos logs)
+        if: always()
+        run: kubectl get pods,svc,hpa -n oficina-mecanica -l app=pagamento || true
