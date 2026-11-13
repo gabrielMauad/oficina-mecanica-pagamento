@@ -44,7 +44,10 @@ public sealed class PagarOrdemServicoHandler : IRequestHandler<PagarOrdemServico
         if (transicao.IsFailure)
             return transicao.Error;
 
-        await _gateway.Atualizar(pagamento, cancellationToken);
+        // Gravação condicional: se uma chamada concorrente já resolveu o pagamento, esta falha sem
+        // registrar eventos, então nenhum evento de integração é publicado.
+        if (!await _gateway.AtualizarSePendente(pagamento, cancellationToken))
+            return PagamentoErrors.ResolvidoPorOutraChamada;
 
         return pagamento;
     }

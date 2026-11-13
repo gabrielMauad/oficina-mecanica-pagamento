@@ -85,8 +85,29 @@ public sealed class PagamentoWebApplicationFactory
 
             // O cliente HTTP do processador chama o mock do próprio host de teste (não há porta real).
             services.AddHttpClient("IProcessadorPagamentoGateway")
-                .ConfigurePrimaryHttpMessageHandler(sp => ((TestServer)sp.GetRequiredService<IServer>()).CreateHandler());
+                .ConfigurePrimaryHttpMessageHandler(sp => new GanchoDoProcessadorHandler(
+                    ((TestServer)sp.GetRequiredService<IServer>()).CreateHandler(), this));
         });
+    }
+
+    /// <summary>
+    /// Gancho de teste executado antes de cada requisição do adapter ao mock do Mercado Pago. Permite
+    /// segurar chamadas simultâneas de pagamento até que todas tenham lido o pagamento Pendente.
+    /// Nulo (sem efeito) fora dos testes que o usam; os testes da coleção rodam em série.
+    /// </summary>
+    public Func<HttpRequestMessage, Task>? AntesDeChamarOProcessador { get; set; }
+
+    private sealed class GanchoDoProcessadorHandler(HttpMessageHandler inner, PagamentoWebApplicationFactory factory)
+        : DelegatingHandler(inner)
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (factory.AntesDeChamarOProcessador is { } gancho)
+                await gancho(request);
+
+            return await base.SendAsync(request, cancellationToken);
+        }
     }
 
     /// <summary>Harness do MassTransit do host de teste (barramento em memória com os consumers reais).</summary>

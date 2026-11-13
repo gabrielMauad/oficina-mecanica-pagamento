@@ -52,8 +52,8 @@ public class PagamentoRepositoryTests(PagamentoWebApplicationFactory factory)
         Assert.Equal(original, obtido);
     }
 
-    [Fact(DisplayName = "Atualizar — grava o novo estado, com os atributos opcionais")]
-    public async Task Atualizar_DeveGravarNovoEstado()
+    [Fact(DisplayName = "AtualizarSePendente — grava o novo estado, com os atributos opcionais")]
+    public async Task AtualizarSePendente_DeveGravarNovoEstado()
     {
         // Arrange
         using var escopo = NovoEscopo();
@@ -69,10 +69,71 @@ public class PagamentoRepositoryTests(PagamentoWebApplicationFactory factory)
         };
 
         // Act
-        await repositorio.Atualizar(recusado);
+        var gravou = await repositorio.AtualizarSePendente(recusado);
 
         // Assert
+        Assert.True(gravou);
         Assert.Equal(recusado, await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId));
+    }
+
+    [Theory(DisplayName = "AtualizarSePendente — item que não está mais Pendente não é sobrescrito e devolve false")]
+    [InlineData("Aprovado")]
+    [InlineData("Recusado")]
+    [InlineData("Cancelado")]
+    public async Task AtualizarSePendente_JaResolvido_NaoDeveSobrescrever(string statusPersistido)
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var record = NovoRecord(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);
+        var persistido = record with { Status = statusPersistido, MotivoRecusa = "motivo original" };
+        await repositorio.Adicionar(persistido);
+
+        // Act
+        var gravou = await repositorio.AtualizarSePendente(
+            record with { Status = "Aprovado", MercadoPagoPaymentId = 1, MotivoRecusa = null });
+
+        // Assert
+        Assert.False(gravou);
+        Assert.Equal(persistido, await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId));
+    }
+
+    [Fact(DisplayName = "AtualizarSePendente — duas gravações concorrentes sobre o mesmo Pendente: só uma vence")]
+    public async Task AtualizarSePendente_Concorrente_SoUmaVence()
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var record = NovoRecord(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);
+        await repositorio.Adicionar(record);
+        var aprovado = record with { Status = "Aprovado", MercadoPagoPaymentId = 1 };
+        var recusado = record with { Status = "Recusado", MotivoRecusa = "cc_rejected_other_reason", MercadoPagoPaymentId = 2 };
+
+        // Act
+        var resultados = await Task.WhenAll(
+            repositorio.AtualizarSePendente(aprovado),
+            repositorio.AtualizarSePendente(recusado));
+
+        // Assert
+        Assert.Single(resultados, r => r);
+        var final = await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId);
+        Assert.Contains(final, new[] { aprovado, recusado });
+    }
+
+    [Fact(DisplayName = "AtualizarSePendente — item inexistente devolve false e não cria o item")]
+    public async Task AtualizarSePendente_Inexistente_NaoDeveCriar()
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var record = NovoRecord(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);
+
+        // Act
+        var gravou = await repositorio.AtualizarSePendente(record with { Status = "Aprovado" });
+
+        // Assert
+        Assert.False(gravou);
+        Assert.Null(await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId));
     }
 
     [Fact(DisplayName = "Obter — par inexistente devolve null")]

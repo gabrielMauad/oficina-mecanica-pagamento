@@ -46,18 +46,37 @@ public class PagamentoGatewayTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    [Fact(DisplayName = "Atualizar — persiste o record e registra o agregado para publicar seus eventos de domínio")]
-    public async Task Atualizar_DevePersistirERegistrarAgregado()
+    [Fact(DisplayName = "AtualizarSePendente — persiste o record e registra o agregado para publicar seus eventos de domínio")]
+    public async Task AtualizarSePendente_DevePersistirERegistrarAgregado()
     {
         var pagamento = PagamentoEntity.Criar(_ordemServicoId, Guid.NewGuid(), _clienteId, 100m).Value;
         pagamento.Aprovar(55);
+        _repositoryMock
+            .Setup(r => r.AtualizarSePendente(It.IsAny<PagamentoRecord>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
 
-        await _gateway.Atualizar(pagamento);
+        var gravou = await _gateway.AtualizarSePendente(pagamento);
 
-        _repositoryMock.Verify(r => r.Atualizar(
+        Assert.True(gravou);
+        _repositoryMock.Verify(r => r.AtualizarSePendente(
             It.Is<PagamentoRecord>(x => x.Status == "Aprovado" && x.MercadoPagoPaymentId == 55),
             It.IsAny<CancellationToken>()), Times.Once);
         Assert.IsType<PagamentoAprovado>(Assert.Single(_collector.Coletar()));
+    }
+
+    [Fact(DisplayName = "AtualizarSePendente — gravação condicional perdida devolve false e não registra os eventos de domínio")]
+    public async Task AtualizarSePendente_CondicaoFalha_NaoDeveRegistrarAgregado()
+    {
+        var pagamento = PagamentoEntity.Criar(_ordemServicoId, Guid.NewGuid(), _clienteId, 100m).Value;
+        pagamento.Aprovar(55);
+        _repositoryMock
+            .Setup(r => r.AtualizarSePendente(It.IsAny<PagamentoRecord>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var gravou = await _gateway.AtualizarSePendente(pagamento);
+
+        Assert.False(gravou);
+        Assert.Empty(_collector.Coletar());
     }
 
     [Fact(DisplayName = "ObterPorOrdemServicoEOrcamento — devolve o agregado reconstituído")]

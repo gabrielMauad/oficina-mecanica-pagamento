@@ -20,6 +20,9 @@ public class PagarOrdemServicoHandlerTests
     public PagarOrdemServicoHandlerTests()
     {
         _handler = new PagarOrdemServicoHandler(_gatewayMock.Object, _processadorMock.Object);
+        _gatewayMock
+            .Setup(g => g.AtualizarSePendente(It.IsAny<PagamentoEntity>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
     }
 
     private PagamentoEntity PendenteDaOrdem(decimal valor = 250m)
@@ -53,7 +56,7 @@ public class PagarOrdemServicoHandlerTests
         Assert.Equal(StatusPagamento.Aprovado, result.Value.Status);
         Assert.Equal(777, result.Value.MercadoPagoPaymentId);
         Assert.Contains(pagamento.DomainEvents, e => e is PagamentoAprovado);
-        _gatewayMock.Verify(g => g.Atualizar(pagamento, It.IsAny<CancellationToken>()), Times.Once);
+        _gatewayMock.Verify(g => g.AtualizarSePendente(pagamento, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact(DisplayName = "Pagamento recusado — marca Recusado com o motivo, persiste e levanta PagamentoRecusado")]
@@ -74,7 +77,7 @@ public class PagarOrdemServicoHandlerTests
         Assert.Equal(888, result.Value.MercadoPagoPaymentId);
         var evento = Assert.IsType<PagamentoRecusado>(Assert.Single(pagamento.DomainEvents));
         Assert.Equal("cc_rejected_other_reason", evento.Motivo);
-        _gatewayMock.Verify(g => g.Atualizar(pagamento, It.IsAny<CancellationToken>()), Times.Once);
+        _gatewayMock.Verify(g => g.AtualizarSePendente(pagamento, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact(DisplayName = "Cobrança — envia ao processador o valor, o orçamento, a descrição e o titular")]
@@ -134,7 +137,7 @@ public class PagarOrdemServicoHandlerTests
         Assert.Equal(StatusPagamento.Pendente, pagamento.Status);
         _processadorMock.Verify(
             p => p.Processar(It.IsAny<SolicitacaoPagamento>(), It.IsAny<CancellationToken>()), Times.Never);
-        _gatewayMock.Verify(g => g.Atualizar(It.IsAny<PagamentoEntity>(), It.IsAny<CancellationToken>()), Times.Never);
+        _gatewayMock.Verify(g => g.AtualizarSePendente(It.IsAny<PagamentoEntity>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact(DisplayName = "Falha técnica no processador — propaga, mantém Pendente e não persiste")]
@@ -151,7 +154,27 @@ public class PagarOrdemServicoHandlerTests
             new PagarOrdemServicoCommand(_ordemServicoId, "APRO", _clienteId), CancellationToken.None));
         Assert.Equal(StatusPagamento.Pendente, pagamento.Status);
         Assert.Empty(pagamento.DomainEvents);
-        _gatewayMock.Verify(g => g.Atualizar(It.IsAny<PagamentoEntity>(), It.IsAny<CancellationToken>()), Times.Never);
+        _gatewayMock.Verify(g => g.AtualizarSePendente(It.IsAny<PagamentoEntity>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact(DisplayName = "Gravação condicional perdida — retorna conflito, pois outra chamada já resolveu o pagamento")]
+    public async Task Handle_GravacaoCondicionalFalha_DeveRetornarConflito()
+    {
+        // Arrange — outra chamada concorrente resolveu o pagamento antes desta gravar
+        var pagamento = PendenteDaOrdem();
+        ProcessadorResponde(new ResultadoProcessamentoPagamento(777, true, "accredited"));
+        _gatewayMock
+            .Setup(g => g.AtualizarSePendente(pagamento, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        // Act
+        var result = await _handler.Handle(
+            new PagarOrdemServicoCommand(_ordemServicoId, "APRO", _clienteId), CancellationToken.None);
+
+        // Assert
+        Assert.True(result.IsFailure);
+        Assert.Equal("Pagamento.ResolvidoPorOutraChamada", result.Error.Code);
+        _gatewayMock.Verify(g => g.AtualizarSePendente(pagamento, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact(DisplayName = "Validator — titular vazio ou muito longo e ids vazios são rejeitados")]

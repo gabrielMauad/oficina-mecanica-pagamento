@@ -8,6 +8,7 @@ using Pagamento.Adapters.DataSources;
 using Pagamento.Adapters.DataSources.Records;
 using Pagamento.Adapters.Gateways;
 using Pagamento.Adapters.Models.Requests;
+using Pagamento.Application.Commands.CancelarPagamento;
 using Pagamento.Application.Commands.CriarPagamento;
 using Pagamento.Application.Gateways;
 using Pagamento.Application.Gateways.Dtos;
@@ -158,6 +159,54 @@ public class PagarOrdemServicoPipelineTests
             p => p.Processar(It.IsAny<SolicitacaoPagamento>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Fact(DisplayName = "Gravação condicional perdida para outra chamada — falha com conflito e não publica evento algum")]
+    public async Task Pagar_GravacaoCondicionalFalha_NaoDevePublicar()
+    {
+        // Arrange — enquanto esta chamada cobra no processador, outra já aprovou o mesmo pagamento
+        using var scope = _provider.CreateScope();
+        var controller = await PrepararPendente(scope);
+        var repositorio = scope.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        _processador
+            .Setup(p => p.Processar(It.IsAny<SolicitacaoPagamento>(), It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                var atual = (await repositorio.ObterPorOrdemServicoEOrcamento(_ordemServicoId, _orcamentoId))!;
+                await repositorio.Adicionar(atual with { Status = "Aprovado" });
+                return new ResultadoProcessamentoPagamento(321, false, "cc_rejected_other_reason");
+            });
+
+        // Act
+        var result = await controller.Pagar(_ordemServicoId, new PagarRequest("OTHE"), _clienteId);
+
+        // Assert
+        Assert.True(result.IsFailure);
+        Assert.Equal("Pagamento.ResolvidoPorOutraChamada", result.Error.Code);
+        Assert.Empty(_ordem);
+        _bus.VerifyNoOtherCalls();
+    }
+
+    [Fact(DisplayName = "Cancelamento — pagamento Pendente vai a Cancelado, persiste e não publica evento")]
+    public async Task Cancelar_Pendente_DeveCancelarSemPublicar()
+    {
+        // Arrange
+        using var scope = _provider.CreateScope();
+        await PrepararPendente(scope);
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        // Act
+        var result = await sender.Send(new CancelarPagamentoCommand(_ordemServicoId, _orcamentoId, "estoque insuficiente"));
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value);
+        Assert.Equal(["persistiu"], _ordem);
+        var gateway = scope.ServiceProvider.GetRequiredService<IPagamentoGateway>();
+        var pagamento = Assert.Single(await gateway.ListarPorOrdemServico(_ordemServicoId));
+        Assert.Equal(Domain.StatusPagamento.Cancelado, pagamento.Status);
+        Assert.Equal("estoque insuficiente", pagamento.MotivoRecusa);
+        _bus.VerifyNoOtherCalls();
+    }
+
     [Fact(DisplayName = "Listagem — dono vê seus pagamentos e outro cliente recebe acesso negado")]
     public async Task Listar_DeveRespeitarODono()
     {
@@ -208,11 +257,15 @@ public class PagarOrdemServicoPipelineTests
             return Task.CompletedTask;
         }
 
-        public Task Atualizar(PagamentoRecord record, CancellationToken ct = default)
+        public Task<bool> AtualizarSePendente(PagamentoRecord record, CancellationToken ct = default)
         {
-            _dados[(record.OrdemServicoId, record.OrcamentoId)] = record;
+            var chave = (record.OrdemServicoId, record.OrcamentoId);
+            if (!_dados.TryGetValue(chave, out var atual) || atual.Status != "Pendente")
+                return Task.FromResult(false);
+
+            _dados[chave] = record;
             ordem.Add("persistiu");
-            return Task.CompletedTask;
+            return Task.FromResult(true);
         }
 
         public Task<PagamentoRecord?> ObterPorOrdemServicoEOrcamento(Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default) =>

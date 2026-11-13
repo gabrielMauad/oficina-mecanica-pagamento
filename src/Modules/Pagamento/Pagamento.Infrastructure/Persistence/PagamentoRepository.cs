@@ -12,6 +12,8 @@ namespace Pagamento.Infrastructure.Persistence;
 /// </summary>
 public sealed class PagamentoRepository : IPagamentoRepository
 {
+    private const string StatusPendente = "Pendente";
+
     private readonly IAmazonDynamoDB _dynamoDb;
     private readonly string _tabela;
 
@@ -34,13 +36,33 @@ public sealed class PagamentoRepository : IPagamentoRepository
         }, ct);
     }
 
-    public async Task Atualizar(PagamentoRecord record, CancellationToken ct = default)
+    public async Task<bool> AtualizarSePendente(PagamentoRecord record, CancellationToken ct = default)
     {
-        await _dynamoDb.PutItemAsync(new PutItemRequest
+        // A condição no status persistido impede que duas chamadas concorrentes (ex.: dois pagamentos
+        // simultâneos da mesma ordem de serviço, ou um pagamento e um cancelamento) resolvam o mesmo
+        // pagamento: só a primeira grava; a outra recebe false e não deve publicar nada.
+        try
         {
-            TableName = _tabela,
-            Item = PagamentoItemMapper.ToItem(record)
-        }, ct);
+            await _dynamoDb.PutItemAsync(new PutItemRequest
+            {
+                TableName = _tabela,
+                Item = PagamentoItemMapper.ToItem(record),
+                ConditionExpression = "#status = :pendente",
+                ExpressionAttributeNames = new Dictionary<string, string>
+                {
+                    ["#status"] = PagamentoItemMapper.Status
+                },
+                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+                {
+                    [":pendente"] = new() { S = StatusPendente }
+                }
+            }, ct);
+            return true;
+        }
+        catch (ConditionalCheckFailedException)
+        {
+            return false;
+        }
     }
 
     public async Task<PagamentoRecord?> ObterPorOrdemServicoEOrcamento(

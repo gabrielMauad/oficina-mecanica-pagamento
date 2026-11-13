@@ -28,6 +28,17 @@ public static class PagamentoTestHelpers
             Guid.NewGuid(), DateTime.UtcNow, ordemServicoId, orcamentoId, clienteId, valor));
     }
 
+    /// <summary>Publica no barramento o evento que o PecasInsumos emite quando a baixa de estoque falha.</summary>
+    public static async Task<Guid> PublicarEstoqueBaixaFalhouAsync(
+        PagamentoWebApplicationFactory factory, Guid ordemServicoId, Guid orcamentoId, string motivo = "Estoque insuficiente")
+    {
+        await factory.Harness.Start();
+        var eventId = Guid.NewGuid();
+        await factory.Harness.Bus.Publish(new EstoqueBaixaFalhouIntegrationEvent(
+            eventId, DateTime.UtcNow, ordemServicoId, orcamentoId, motivo));
+        return eventId;
+    }
+
     public static async Task<List<PagamentoDto>> ListarAsync(HttpClient client, Guid ordemServicoId)
     {
         var response = await client.GetAsync($"/api/v1/pagamentos/ordens-servico/{ordemServicoId}");

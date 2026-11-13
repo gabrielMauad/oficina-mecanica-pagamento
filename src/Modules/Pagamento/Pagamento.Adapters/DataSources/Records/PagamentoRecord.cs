@@ -2,7 +2,7 @@ namespace Pagamento.Adapters.DataSources.Records;
 
 /// <summary>
 /// Representação do pagamento na camada de persistência, sem regra de negócio. O status é guardado
-/// como texto (<c>Pendente</c>, <c>Aprovado</c> ou <c>Recusado</c>).
+/// como texto (<c>Pendente</c>, <c>Aprovado</c>, <c>Recusado</c> ou <c>Cancelado</c>).
 /// </summary>
 public sealed record PagamentoRecord(
     Guid PagamentoId,

@@ -5,7 +5,8 @@ namespace Pagamento.Domain;
 
 /// <summary>
 /// Pagamento do orçamento aprovado de uma ordem de serviço. Nasce <see cref="StatusPagamento.Pendente"/>
-/// e só sai desse estado uma vez: aprovado ou recusado pelo processador de pagamento.
+/// e só sai desse estado uma vez: aprovado ou recusado pelo processador de pagamento, ou cancelado
+/// quando o orçamento deixa de valer antes de ser pago.
 /// </summary>
 public sealed class Pagamento : AggregateRoot<PagamentoId>
 {
@@ -100,8 +101,25 @@ public sealed class Pagamento : AggregateRoot<PagamentoId>
         return this;
     }
 
+    /// <summary>
+    /// Cancela um pagamento ainda não pago. Não levanta evento: o cancelamento decorre de um evento
+    /// que a ordem de serviço já conhece. O motivo fica em <see cref="MotivoRecusa"/>.
+    /// </summary>
+    public Result<Pagamento> Cancelar(string motivo)
+    {
+        if (Status != StatusPagamento.Pendente)
+            return StatusInvalido();
+        if (string.IsNullOrWhiteSpace(motivo))
+            return Error.Validation("Pagamento.MotivoVazio", "Motivo do cancelamento é obrigatório.");
+
+        Status = StatusPagamento.Cancelado;
+        MotivoRecusa = motivo;
+        AtualizadoEm = DateTime.UtcNow;
+        return this;
+    }
+
     private Error StatusInvalido() =>
         Error.Conflict(
             "Pagamento.StatusInvalido",
-            $"O pagamento está {Status} e só pode ser aprovado ou recusado enquanto estiver {StatusPagamento.Pendente}.");
+            $"O pagamento está {Status} e só pode ser aprovado, recusado ou cancelado enquanto estiver {StatusPagamento.Pendente}.");
 }

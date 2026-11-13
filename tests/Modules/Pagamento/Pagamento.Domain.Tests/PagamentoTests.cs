@@ -199,6 +199,93 @@ public class PagamentoTests
         Assert.Equal("motivo", pagamento.MotivoRecusa);
     }
 
+    [Fact(DisplayName = "Cancelar — de Pendente vai a Cancelado, guarda o motivo e não levanta evento")]
+    public void Cancelar_DePendente_DeveCancelar()
+    {
+        // Arrange
+        var pagamento = NovoPendente();
+
+        // Act
+        var result = pagamento.Cancelar("Estoque insuficiente");
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.Equal(StatusPagamento.Cancelado, pagamento.Status);
+        Assert.Equal("Estoque insuficiente", pagamento.MotivoRecusa);
+        Assert.Null(pagamento.MercadoPagoPaymentId);
+        Assert.InRange(pagamento.AtualizadoEm, pagamento.CriadoEm, DateTime.UtcNow);
+        Assert.Empty(pagamento.DomainEvents);
+    }
+
+    [Theory(DisplayName = "Cancelar — motivo vazio retorna erro e mantém Pendente")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Cancelar_MotivoVazio_DeveFalhar(string motivo)
+    {
+        var pagamento = NovoPendente();
+
+        var result = pagamento.Cancelar(motivo);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Pagamento.MotivoVazio", result.Error.Code);
+        Assert.Equal(StatusPagamento.Pendente, pagamento.Status);
+    }
+
+    [Fact(DisplayName = "Cancelar — de Aprovado retorna conflito")]
+    public void Cancelar_DeAprovado_DeveFalhar()
+    {
+        var pagamento = NovoPendente();
+        pagamento.Aprovar(1);
+
+        var result = pagamento.Cancelar("motivo");
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Pagamento.StatusInvalido", result.Error.Code);
+        Assert.Equal(StatusPagamento.Aprovado, pagamento.Status);
+    }
+
+    [Fact(DisplayName = "Cancelar — de Recusado retorna conflito")]
+    public void Cancelar_DeRecusado_DeveFalhar()
+    {
+        var pagamento = NovoPendente();
+        pagamento.Recusar("recusa", 1);
+
+        var result = pagamento.Cancelar("motivo");
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Pagamento.StatusInvalido", result.Error.Code);
+        Assert.Equal(StatusPagamento.Recusado, pagamento.Status);
+        Assert.Equal("recusa", pagamento.MotivoRecusa);
+    }
+
+    [Fact(DisplayName = "Cancelar — de Cancelado retorna conflito")]
+    public void Cancelar_DeCancelado_DeveFalhar()
+    {
+        var pagamento = NovoPendente();
+        pagamento.Cancelar("primeiro");
+
+        var result = pagamento.Cancelar("segundo");
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Pagamento.StatusInvalido", result.Error.Code);
+        Assert.Equal("primeiro", pagamento.MotivoRecusa);
+    }
+
+    [Fact(DisplayName = "Aprovar e Recusar — de Cancelado retornam conflito")]
+    public void AprovarERecusar_DeCancelado_DevemFalhar()
+    {
+        var pagamento = NovoPendente();
+        pagamento.Cancelar("motivo");
+
+        var aprovar = pagamento.Aprovar(1);
+        var recusar = pagamento.Recusar("outro", 2);
+
+        Assert.True(aprovar.IsFailure);
+        Assert.True(recusar.IsFailure);
+        Assert.Equal(StatusPagamento.Cancelado, pagamento.Status);
+        Assert.Empty(pagamento.DomainEvents);
+    }
+
     [Fact(DisplayName = "Reconstituir — restaura o estado persistido sem levantar eventos")]
     public void Reconstituir_DeveRestaurarEstado()
     {

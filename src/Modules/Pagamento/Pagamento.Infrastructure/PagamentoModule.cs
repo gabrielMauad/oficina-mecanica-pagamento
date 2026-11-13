@@ -71,6 +71,7 @@ public static class PagamentoModule
         #region Integration Events
 
         services.AddScoped<IIntegrationEventHandler<OrcamentoAprovadoIntegrationEvent>, CriarPagamentoQuandoOrcamentoAprovado>();
+        services.AddScoped<IIntegrationEventHandler<EstoqueBaixaFalhouIntegrationEvent>, CancelarPagamentoQuandoEstoqueBaixaFalhou>();
 
         #endregion
 

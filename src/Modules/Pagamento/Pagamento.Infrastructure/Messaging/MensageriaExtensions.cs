@@ -30,6 +30,7 @@ public static class MensageriaExtensions
             bus.SetEndpointNameFormatter(new KebabCaseEndpointNameFormatter(PrefixoDasFilas, false));
 
             bus.AddConsumer<OrcamentoAprovadoConsumer>();
+            bus.AddConsumer<EstoqueBaixaFalhouConsumer>();
 
             if (string.Equals(options.Transporte, MensageriaOptions.TransporteInMemory, StringComparison.OrdinalIgnoreCase))
             {

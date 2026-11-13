@@ -74,6 +74,23 @@ public class PagamentoSagaTests(PagamentoWebApplicationFactory factory)
         Assert.Equal(primeiro[0].PagamentoId, depois[0].PagamentoId);
     }
 
+    /// <summary>Espera por polling (e não pela inatividade do harness) o consumo do EstoqueBaixaFalhou.</summary>
+    private async Task AguardarConsumoAsync(Guid eventId)
+    {
+        var limite = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < limite)
+        {
+            if (factory.Harness.Consumed
+                .Select<EstoqueBaixaFalhouIntegrationEvent>(m => m.Context.Message.EventId == eventId)
+                .Any())
+                return;
+
+            await Task.Delay(50);
+        }
+
+        Assert.Fail("O evento EstoqueBaixaFalhou não foi consumido a tempo.");
+    }
+
     private async Task AguardarConsumoDasDuasEntregasAsync(Guid ordemServicoId)
     {
         var limite = DateTime.UtcNow.AddSeconds(15);
@@ -149,6 +166,150 @@ public class PagamentoSagaTests(PagamentoWebApplicationFactory factory)
         var persistido = Assert.Single(await ListarAsync(cliente, ordemServicoId));
         Assert.Equal("Recusado", persistido.Status);
         Assert.Equal("cc_rejected_other_reason", persistido.MotivoRecusa);
+    }
+
+    [Fact(DisplayName = "Dois pagamentos simultâneos da mesma ordem → só um vence (200), o outro recebe 409 e só um evento é publicado")]
+    public async Task Pagar_Simultaneo_DeveResolverUmaVezEPublicarUmEvento()
+    {
+        // Arrange — o gancho segura as duas cobranças até ambas terem lido o pagamento Pendente
+        var (ordemServicoId, orcamentoId, clienteId) = await CriarPendenteAsync(factory);
+        using var cliente = factory.CreateClienteClient(clienteId);
+        var chegadas = 0;
+        var liberar = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        factory.AntesDeChamarOProcessador = async requisicao =>
+        {
+            if (requisicao.RequestUri is null || !requisicao.RequestUri.AbsolutePath.EndsWith("/v1/payments"))
+                return;
+            if (Interlocked.Increment(ref chegadas) == 2)
+                liberar.SetResult();
+            await liberar.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        };
+
+        HttpResponseMessage[] respostas;
+        try
+        {
+            // Act
+            respostas = await Task.WhenAll(
+                PagarAsync(cliente, ordemServicoId, "APRO"),
+                PagarAsync(cliente, ordemServicoId, "OTHE"));
+        }
+        finally
+        {
+            factory.AntesDeChamarOProcessador = null;
+        }
+
+        // Assert
+        var vencedora = Assert.Single(respostas, r => r.StatusCode == HttpStatusCode.OK);
+        var perdedora = Assert.Single(respostas, r => r.StatusCode == HttpStatusCode.Conflict);
+        Assert.Contains("Pagamento.ResolvidoPorOutraChamada", await perdedora.Content.ReadAsStringAsync());
+
+        var resolvido = await vencedora.Content.ReadFromJsonAsync<PagamentoDto>(JsonOptions);
+        Assert.NotNull(resolvido);
+        var persistido = Assert.Single(await ListarAsync(cliente, ordemServicoId));
+        Assert.Equal(resolvido.Status, persistido.Status);
+
+        var aprovado = resolvido.Status == "Aprovado";
+        Assert.True(aprovado
+            ? await factory.Harness.Published.Any<PagamentoAprovadoIntegrationEvent>(m => m.Context.Message.OrdemServicoId == ordemServicoId)
+            : await factory.Harness.Published.Any<PagamentoRecusadoIntegrationEvent>(m => m.Context.Message.OrdemServicoId == ordemServicoId));
+        Assert.False(aprovado
+            ? await factory.Harness.Published.Any<PagamentoRecusadoIntegrationEvent>(m => m.Context.Message.OrdemServicoId == ordemServicoId)
+            : await factory.Harness.Published.Any<PagamentoAprovadoIntegrationEvent>(m => m.Context.Message.OrdemServicoId == ordemServicoId));
+    }
+
+    [Fact(DisplayName = "EstoqueBaixaFalhou com pagamento Pendente → Cancelado, nada publicado e pagar passa a dar 404")]
+    public async Task EstoqueBaixaFalhou_ComPendente_DeveCancelarSemPublicar()
+    {
+        // Arrange
+        var (ordemServicoId, orcamentoId, clienteId) = await CriarPendenteAsync(factory);
+        using var cliente = factory.CreateClienteClient(clienteId);
+
+        // Act
+        var eventId = await PublicarEstoqueBaixaFalhouAsync(factory, ordemServicoId, orcamentoId, "Estoque insuficiente");
+        var cancelados = await AguardarStatusAsync(cliente, ordemServicoId, "Cancelado");
+
+        // Assert
+        var pagamento = Assert.Single(cancelados);
+        Assert.Equal("Cancelado", pagamento.Status);
+        Assert.Equal("Estoque insuficiente", pagamento.MotivoRecusa);
+        await AguardarConsumoAsync(eventId);
+        Assert.False(await factory.Harness.Published.Any<PagamentoAprovadoIntegrationEvent>(m =>
+            m.Context.Message.OrdemServicoId == ordemServicoId));
+        Assert.False(await factory.Harness.Published.Any<PagamentoRecusadoIntegrationEvent>(m =>
+            m.Context.Message.OrdemServicoId == ordemServicoId));
+        Assert.Equal(HttpStatusCode.NotFound, (await PagarAsync(cliente, ordemServicoId, "APRO")).StatusCode);
+    }
+
+    [Fact(DisplayName = "EstoqueBaixaFalhou reentregue sobre pagamento já Cancelado → continua Cancelado")]
+    public async Task EstoqueBaixaFalhou_Reentregue_DeveSerIdempotente()
+    {
+        // Arrange
+        var (ordemServicoId, orcamentoId, clienteId) = await CriarPendenteAsync(factory);
+        using var cliente = factory.CreateClienteClient(clienteId);
+        await PublicarEstoqueBaixaFalhouAsync(factory, ordemServicoId, orcamentoId, "Estoque insuficiente");
+        await AguardarStatusAsync(cliente, ordemServicoId, "Cancelado");
+
+        // Act
+        var segundoId = await PublicarEstoqueBaixaFalhouAsync(factory, ordemServicoId, orcamentoId, "Outro motivo");
+        await AguardarConsumoAsync(segundoId);
+
+        // Assert
+        var pagamento = Assert.Single(await ListarAsync(cliente, ordemServicoId));
+        Assert.Equal("Cancelado", pagamento.Status);
+        Assert.Equal("Estoque insuficiente", pagamento.MotivoRecusa);
+    }
+
+    [Fact(DisplayName = "EstoqueBaixaFalhou sem pagamento da ordem → nada acontece")]
+    public async Task EstoqueBaixaFalhou_SemPagamento_NaoDeveFazerNada()
+    {
+        // Arrange
+        var ordemServicoId = Guid.NewGuid();
+        using var oficina = factory.CreateOficinaClient();
+
+        // Act
+        var eventId = await PublicarEstoqueBaixaFalhouAsync(factory, ordemServicoId, Guid.NewGuid());
+        await AguardarConsumoAsync(eventId);
+
+        // Assert
+        Assert.Empty(await ListarAsync(oficina, ordemServicoId));
+        Assert.False(await factory.Harness.Published.Any<PagamentoAprovadoIntegrationEvent>(m =>
+            m.Context.Message.OrdemServicoId == ordemServicoId));
+        Assert.False(await factory.Harness.Published.Any<PagamentoRecusadoIntegrationEvent>(m =>
+            m.Context.Message.OrdemServicoId == ordemServicoId));
+    }
+
+    [Fact(DisplayName = "EstoqueBaixaFalhou de outro orçamento da mesma ordem ou com pagamento já Aprovado → o pagamento não muda")]
+    public async Task EstoqueBaixaFalhou_NaoPendenteOuOutroOrcamento_NaoDeveAlterar()
+    {
+        // Arrange — um pagamento já aprovado e um Pendente de outro orçamento da mesma ordem
+        var (ordemServicoId, orcamentoAprovadoId, clienteId) = await CriarPendenteAsync(factory, 100m);
+        using var cliente = factory.CreateClienteClient(clienteId);
+        Assert.Equal(HttpStatusCode.OK, (await PagarAsync(cliente, ordemServicoId, "APRO")).StatusCode);
+        var outroOrcamentoId = Guid.NewGuid();
+        await PublicarOrcamentoAprovadoAsync(factory, ordemServicoId, outroOrcamentoId, clienteId, 150m);
+        await AguardarPagamentosAsync(cliente, ordemServicoId, 2);
+
+        // Act — a falha é do orçamento já aprovado/pago, não do pendente
+        var eventId = await PublicarEstoqueBaixaFalhouAsync(factory, ordemServicoId, orcamentoAprovadoId);
+        await AguardarConsumoAsync(eventId);
+
+        // Assert
+        var pagamentos = await ListarAsync(cliente, ordemServicoId);
+        Assert.Contains(pagamentos, p => p.OrcamentoId == orcamentoAprovadoId && p.Status == "Aprovado");
+        Assert.Contains(pagamentos, p => p.OrcamentoId == outroOrcamentoId && p.Status == "Pendente");
+    }
+
+    private static async Task<List<PagamentoDto>> AguardarStatusAsync(HttpClient cliente, Guid ordemServicoId, string status)
+    {
+        var limite = DateTime.UtcNow.AddSeconds(15);
+        var pagamentos = await ListarAsync(cliente, ordemServicoId);
+        while (!pagamentos.Any(p => p.Status == status) && DateTime.UtcNow < limite)
+        {
+            await Task.Delay(50);
+            pagamentos = await ListarAsync(cliente, ordemServicoId);
+        }
+
+        return pagamentos;
     }
 
     [Fact(DisplayName = "Pagar com cliente de outra ordem → 403, o pagamento segue Pendente e nada é publicado")]

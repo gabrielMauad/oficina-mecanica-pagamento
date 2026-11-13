@@ -24,10 +24,15 @@ public sealed class PagamentoGateway : IPagamentoGateway
         return _repository.Adicionar(PagamentoMapper.ToRecord(pagamento), ct);
     }
 
-    public Task Atualizar(PagamentoEntity pagamento, CancellationToken ct = default)
+    public async Task<bool> AtualizarSePendente(PagamentoEntity pagamento, CancellationToken ct = default)
     {
+        if (!await _repository.AtualizarSePendente(PagamentoMapper.ToRecord(pagamento), ct))
+            return false;
+
+        // Só registra o agregado depois de gravar: se a gravação perdeu a corrida, os eventos de
+        // domínio dele não podem ser publicados.
         _collector.Registrar(pagamento);
-        return _repository.Atualizar(PagamentoMapper.ToRecord(pagamento), ct);
+        return true;
     }
 
     public async Task<PagamentoEntity?> ObterPorOrdemServicoEOrcamento(

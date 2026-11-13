@@ -10,7 +10,12 @@ public interface IPagamentoGateway
 {
     Task Adicionar(PagamentoEntity pagamento, CancellationToken ct = default);
 
-    Task Atualizar(PagamentoEntity pagamento, CancellationToken ct = default);
+    /// <summary>
+    /// Persiste a saída do pagamento de <see cref="StatusPagamento.Pendente"/> (aprovado, recusado ou
+    /// cancelado). A gravação é condicional ao pagamento persistido ainda estar <c>Pendente</c>:
+    /// devolve <c>false</c> quando outra chamada concorrente o resolveu antes.
+    /// </summary>
+    Task<bool> AtualizarSePendente(PagamentoEntity pagamento, CancellationToken ct = default);
 
     Task<PagamentoEntity?> ObterPorOrdemServicoEOrcamento(Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default);
 

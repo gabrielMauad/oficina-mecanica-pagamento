@@ -18,6 +18,7 @@ public class PagamentoApiController : ControllerBase
     // Mantidos em sincronia com PagamentoErrors (Application é internal).
     private const string AcessoNegadoErrorCode = "Pagamento.AcessoNegado";
     private const string PendenteNaoEncontradoErrorCode = "Pagamento.PendenteNaoEncontrado";
+    private const string ResolvidoPorOutraChamadaErrorCode = "Pagamento.ResolvidoPorOutraChamada";
 
     private readonly PagamentoController _caController;
 
@@ -49,6 +50,7 @@ public class PagamentoApiController : ControllerBase
             {
                 AcessoNegadoErrorCode => StatusCode(StatusCodes.Status403Forbidden, result.Error),
                 PendenteNaoEncontradoErrorCode => NotFound(result.Error),
+                ResolvidoPorOutraChamadaErrorCode => Conflict(result.Error),
                 _ => UnprocessableEntity(result.Error)
             };
 
