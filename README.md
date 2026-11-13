@@ -24,18 +24,30 @@ sequenceDiagram
     P-->>OS: PagamentoRecusado → compensação: orçamento Rejeitado e estorno das peças
 ```
 
-O status do pagamento (`Pendente` → `Aprovado` | `Recusado`) é interno a este serviço; a OS não ganha
-status novo. Os eventos são publicados em SNS/SQS por MassTransit (8.x) **depois** que o pagamento foi
-gravado no DynamoDB. Este serviço consome `OrcamentoAprovado` (fila `pagamento-orcamento-aprovado`) e
-publica `PagamentoAprovado` e `PagamentoRecusado`; os tipos dos eventos estão em
+O status do pagamento (`Pendente` → `Aprovado` | `Recusado` | `Cancelado`) é interno a este serviço; a
+OS não ganha status novo. Os eventos são publicados em SNS/SQS por MassTransit (8.x) **depois** que o
+pagamento foi gravado no DynamoDB. Este serviço consome `OrcamentoAprovado` (fila
+`pagamento-orcamento-aprovado`) e `EstoqueBaixaFalhou` (fila `pagamento-estoque-baixa-falhou`) e publica
+`PagamentoAprovado` e `PagamentoRecusado`; os tipos dos eventos estão em
 `src/Contracts/OficinaMecanica.Contracts`, cópia idêntica à dos demais serviços.
+
+### Cancelamento por falha na baixa de estoque
+
+A baixa de estoque do orçamento acontece em paralelo à aprovação do cliente. Se o cliente aprovou o
+orçamento (pagamento `Pendente` criado) antes de chegar a falha da baixa (`EstoqueBaixaFalhou`), a OS
+rejeita o orçamento e o pagamento não pode mais ser cobrado. Ao consumir `EstoqueBaixaFalhou`, este
+serviço busca o pagamento da ordem de serviço e do orçamento do evento: se estiver `Pendente`, passa a
+`Cancelado` (o motivo da falha fica em `motivoRecusa`) **sem publicar evento algum**; se não existir
+pagamento (caso comum) ou ele já não estiver `Pendente` (reentrega, pagamento já resolvido), só registra
+log. Um pagamento `Cancelado` não é pagável: `POST .../pagar` responde 404 e `GET` o lista com status
+`Cancelado`.
 
 ## API
 
 | Rota | Papel | Resposta |
 |---|---|---|
 | `GET /api/v1/pagamentos/ordens-servico/{ordemServicoId}` | `Cliente` (só o dono) ou `Oficina` | 200 com a lista de pagamentos da OS; 403 se for de outro cliente |
-| `POST /api/v1/pagamentos/ordens-servico/{ordemServicoId}/pagar` body `{"titularCartao": "APRO"}` | `Cliente` (só o dono) | 200 com o pagamento atualizado (aprovado **ou** recusado); 404 sem pagamento `Pendente`; 403 se não for o dono; 422 se o titular for inválido |
+| `POST /api/v1/pagamentos/ordens-servico/{ordemServicoId}/pagar` body `{"titularCartao": "APRO"}` | `Cliente` (só o dono) | 200 com o pagamento atualizado (aprovado **ou** recusado); 404 sem pagamento `Pendente` (inclui `Cancelado`); 403 se não for o dono; 422 se o titular for inválido; 409 se uma chamada simultânea já resolveu o mesmo pagamento (nenhum evento é publicado por esta chamada) |
 
 Além delas: `/healthz`, `/healthz/live`, `/healthz/ready` (verifica o DynamoDB e o barramento),
 `/openapi/v1.json` e `/scalar`. Autenticação por JWT HS256 com segredo compartilhado (tokens do serviço
@@ -57,11 +69,12 @@ serviço o consome **por HTTP** (`MercadoPago__BaseUrl`, que aponta para o próp
 consumiria o Mercado Pago real, então as chamadas aparecem nos traces.
 
 - `POST /mock/mercadopago/oauth/token` — body `{"client_id","client_secret","grant_type":"client_credentials"}`;
-  200 `{"access_token","token_type":"bearer","expires_in":21600}`; 401 se as credenciais não forem
-  `MercadoPago__ClientId`/`MercadoPago__ClientSecret`.
+  200 `{"access_token","token_type":"bearer","expires_in":21600}`; 400 se o `grant_type` não for
+  `client_credentials`; 401 se as credenciais não forem `MercadoPago__ClientId`/`MercadoPago__ClientSecret`.
 - `POST /mock/mercadopago/v1/payments` — `Authorization: Bearer <access_token>` e body
   `{"transaction_amount","external_reference","description","card_holder_name"}`; 201
-  `{"id","status","status_detail"}`; 401 se o token for inválido.
+  `{"id","status","status_detail"}`; 400 se o `transaction_amount` for menor ou igual a zero; 401 se o
+  token for inválido.
 
 O `access_token` é assinado (HMAC) com as credenciais configuradas e não fica guardado em memória:
 qualquer réplica do serviço valida um token emitido por outra.
@@ -71,6 +84,20 @@ qualquer réplica do serviço valida um token emitido por outra.
 Na AWS, a rota técnica `ANY /pagamento/{proxy+}` do API Gateway também alcança
 `/mock/mercadopago/*`. O mock exige as credenciais de cliente e o Bearer, mas restringir o acesso por
 origem fica como evolução futura.
+
+## Limitações conhecidas
+
+- **Sem outbox.** O evento de integração é publicado depois de o pagamento ser gravado no DynamoDB, mas
+  a gravação e a publicação não são atômicas: se a publicação falhar após gravar, o evento não é
+  reenviado, o pagamento fica resolvido neste serviço e a OS continua aguardando. Um outbox é evolução
+  futura.
+- **Concorrência no pagamento.** A cobrança no processador acontece antes da gravação. A gravação é
+  condicional ao pagamento ainda estar `Pendente`, então duas chamadas simultâneas a `/pagar` nunca
+  publicam eventos conflitantes: a que perde a corrida recebe 409 e não publica nada (a cobrança que ela
+  já fez no processador, um mock, não é desfeita).
+- **Cancelamento e pagamento simultâneos.** Se `EstoqueBaixaFalhou` e um `/pagar` chegarem ao mesmo
+  tempo, vale o que gravar primeiro; se o pagamento vencer, a OS recebe `PagamentoAprovado` de um
+  orçamento que ela já rejeitou e o ignora (a regra de execução da OS exige orçamento `Aprovado`).
 
 ## Configuração
 
