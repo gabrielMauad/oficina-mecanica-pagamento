@@ -127,7 +127,7 @@ jobs:
           cat coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
           cobertura=$(jq -r '.summary.linecoverage' coverage-report/Summary.json)
           echo "Cobertura de linhas: ${cobertura}% (minimo: 80%)"
-          if ! awk -v c="$cobertura" 'BEGIN { exit !(c >= 80) }'; then
+          if ! jq -e '.summary.linecoverage >= 80' coverage-report/Summary.json > /dev/null; then
             echo "::error::Cobertura de linhas ${cobertura}% abaixo do minimo de 80%."
             exit 1
           fi

@@ -42,13 +42,27 @@ public class InMemoryIntegrationEventBusTests
         h2.Verify(h => h.Handle(evento, It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    [Fact(DisplayName = "Publish — sem handlers registrados não faz nada")]
+    [Fact(DisplayName = "Publish — sem handlers registrados não falha nem registra métrica de falha")]
     public async Task Publish_SemHandlers_NaoDeveFalhar()
     {
         using var metrics = new IntegracoesMetrics();
         var bus = new InMemoryIntegrationEventBus(ProviderCom(), metrics);
 
-        await bus.Publish(NovoEvento(), TestContext.Current.CancellationToken);
+        var falhasRegistradas = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrumento, l) =>
+        {
+            if (instrumento.Meter == metrics.Meter && instrumento.Name == IntegracoesMetrics.FalhasInstrumentName)
+                l.EnableMeasurementEvents(instrumento);
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, _, _) => falhasRegistradas++);
+        listener.Start();
+
+        var excecao = await Record.ExceptionAsync(
+            () => bus.Publish(NovoEvento(), TestContext.Current.CancellationToken));
+
+        Assert.Null(excecao);
+        Assert.Equal(0, falhasRegistradas);
     }
 
     [Fact(DisplayName = "Publish — handler que falha registra a métrica de falha e propaga a exceção")]
