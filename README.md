@@ -22,6 +22,7 @@ serviços (`Domain` → `Application` → `Adapters` → `Infrastructure`/`Web`;
 - [Documentação da API (OpenAPI/Scalar)](#documentação-da-api-openapiscalar)
 - [Pipeline de CI/CD](#pipeline-de-cicd)
 - [Deploy no EKS e limitação da AWS Academy](#deploy-no-eks-e-limitação-da-aws-academy)
+- [Observabilidade](#observabilidade)
 - [Repositórios do sistema](#repositórios-do-sistema)
 
 ## Responsabilidade
@@ -349,8 +350,8 @@ migrations.
 
 - **Gate do CI: 93,8% de cobertura de linhas** (mínimo exigido: 80%), no run da `main` do commit
   `65f6633`: [run 43552027438](https://github.com/gabrielMauad/oficina-mecanica-pagamento/actions/runs/43552027438).
-  O job `Build & Test` desse run está verde. Os jobs seguintes (imagem e deploy) falharam porque as
-  credenciais de sessão da AWS Academy não estavam carregadas — ver
+  O run da `main` aparece como falho: o job de imagem falha ao carregar as credenciais de sessão da AWS
+  Academy e o deploy é pulado; o `Build & Test` (com o gate de cobertura) está verde — ver
   [Deploy no EKS](#deploy-no-eks-e-limitação-da-aws-academy).
 - <!-- sonarcloud-link -->SonarCloud: link público do projeto a ser preenchido quando a análise for configurada.
 
@@ -363,9 +364,7 @@ O documento OpenAPI (com o esquema `Bearer` e a segurança por operação) é ge
 | Local | <http://localhost:8084/openapi/v1.json> · UI Scalar em <http://localhost:8084/scalar> (a raiz `/` redireciona para ela) |
 | Via API Gateway (AWS) | `<url-do-api-gateway>/pagamento/openapi/v1.json` |
 
-A URL do API Gateway é descoberta pelo nome da API (`oficina-mecanica-api`), nunca fixa. A coleção de
-requisições do sistema inteiro fica em `docs/guias` do repositório
-[`oficina-mecanica-app`](https://github.com/gabrielMauad/oficina-mecanica-app).
+A URL do API Gateway é descoberta pelo nome da API (`oficina-mecanica-api`), nunca fixa. As coleções de requisições do sistema inteiro ficam no repositório `oficina-mecanica-app`: [Bruno](https://github.com/gabrielMauad/oficina-mecanica-app/blob/main/docs/guias/collection_bruno.yml) e [Postman](https://github.com/gabrielMauad/oficina-mecanica-app/blob/main/docs/guias/collection_postman.json).
 
 ## Pipeline de CI/CD
 
@@ -388,7 +387,7 @@ Detalhes do `ci-cd.yml`:
    aguarda o `rollout status` e executa o **smoke test** `GET <api-gateway>/pagamento/healthz/ready`, com
    retentativas.
 
-O branch `main` é protegido; o status check obrigatório é o `Build & Test`.
+O nome do job `Build & Test` é mantido estável porque é o status check a ser exigido na proteção da `main`.
 
 ## Deploy no EKS e limitação da AWS Academy
 
@@ -411,11 +410,22 @@ esta pipeline só publica o serviço nela.
 - A pipeline autentica com as **três credenciais temporárias da sessão do laboratório** (secrets
   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_SESSION_TOKEN`, no environment `aws-academy`),
   que **precisam ser renovadas manualmente a cada sessão** (decisão registrada no ADR-006 do repositório
-  `oficina-mecanica-app`). Sem elas, os jobs de imagem e de deploy falham ao carregar as credenciais; o
+  `oficina-mecanica-app`). Sem elas, o job de imagem falha ao carregar as credenciais e o deploy é pulado; o
   deploy é reexecutável por `workflow_dispatch` depois de renovar os secrets.
 - Os pods **não usam IRSA**: acessam DynamoDB, SNS e SQS com as credenciais da **role do nó**, obtidas pelo
   serviço de metadados da instância (IMDS) pela cadeia padrão do SDK. Por isso `DynamoDb__ServiceUrl`,
   `Mensageria__ServiceUrl`, `Mensageria__AccessKey` e `Mensageria__SecretKey` ficam vazios na AWS.
+
+## Observabilidade
+
+Traces, métricas e logs seguem o padrão do sistema (OpenTelemetry → OTLP): `service.name` vem de
+`OTEL_SERVICE_NAME` (`oficina-mecanica-pagamento`, definido no ConfigMap em [`k8s/01-configmap.yaml`](k8s/01-configmap.yaml)),
+com amostragem em 100 %, instrumentação de ASP.NET Core, `HttpClient` e runtime, e logs JSON com `trace_id`.
+Os spans do MassTransit (publicação e consumo) entram nos traces e o `traceparent` viaja nas mensagens,
+de modo que um trace acompanha a Saga entre os serviços. O contador `oficina.integracoes.falhas`
+(atributos `evento` e `handler`) é incrementado quando o processamento de um evento consumido
+(`OrcamentoAprovado` e `EstoqueBaixaFalhou`) lança exceção. Na nuvem o destino é o New Relic; localmente, o Jaeger
+(<http://localhost:16686>).
 
 ## Repositórios do sistema
 
