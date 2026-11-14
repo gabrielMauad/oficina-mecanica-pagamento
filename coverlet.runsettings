@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Configuracao da coleta de cobertura (coverlet) usada pelo CI e localmente:
+    dotnet test, com os parametros: settings coverlet.runsettings e collect "XPlat Code Coverage"
+
+  A metrica e a cobertura de linhas do servico inteiro: todas as assemblies de src/ (inclusive o
+  mock do Mercado Pago, que fica no Api) e nenhuma de tests/. As unicas exclusoes permitidas sao as
+  abaixo, e a mesma lista vale para o SonarCloud (sonar.coverage.exclusions nos workflows), para
+  que os dois numeros coincidam:
+    - **/Program.cs: composicao do host (top-level statements); so encadeia as extensoes de
+      configuracao.
+    - **/*.generated.cs: codigo gerado em tempo de build por source generator (suporte a
+      comentarios XML do OpenAPI, em obj/). Este servico nao tem migrations do EF Core.
+  Nenhuma classe de producao e marcada com [ExcludeFromCodeCoverage].
+-->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat Code Coverage">
+        <Configuration>
+          <Format>opencover</Format>
+          <ExcludeByFile>**/Program.cs,**/*.generated.cs</ExcludeByFile>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

@@ -82,8 +82,9 @@ jobs:
         run: dotnet restore "${{ env.SOLUTION }}"
 
       # O token entra por variavel de ambiente (e nao interpolado no script) para nao aparecer na
-      # linha de comando exibida no log. Migrations (codigo gerado) e Program.cs (composicao do
-      # host, coberto apenas pelos testes de integracao) ficam fora do calculo de cobertura.
+      # linha de comando exibida no log. Program.cs (composicao do host) e o codigo gerado por
+      # source generators (*.generated.cs) ficam fora do calculo de cobertura; a mesma lista esta
+      # em coverlet.runsettings.
       - name: SonarCloud - begin
         if: steps.sonar.outputs.enabled == 'true'
         env:
@@ -95,7 +96,7 @@ jobs:
             /d:sonar.token="$SONAR_TOKEN" \
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" \
-            /d:sonar.coverage.exclusions="**/Migrations/**,**/Program.cs"
+            /d:sonar.coverage.exclusions="**/Program.cs,**/*.generated.cs"
 
       - name: Build
         run: dotnet build "${{ env.SOLUTION }}" --no-restore --configuration Release
@@ -105,13 +106,31 @@ jobs:
       - name: Test (com cobertura)
         run: |
           dotnet test "${{ env.SOLUTION }}" --no-build --configuration Release --verbosity normal \
-            --collect "XPlat Code Coverage;Format=opencover"
+            --settings coverlet.runsettings --collect "XPlat Code Coverage"
 
       - name: SonarCloud - end
         if: steps.sonar.outputs.enabled == 'true'
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+
+      # Gate de cobertura: consolida os relatorios de todos os projetos de teste (unitarios e de
+      # integracao) e falha se a cobertura de linhas do servico ficar abaixo de 80%. Nao depende do
+      # SonarCloud: roda e valida mesmo sem SONAR_TOKEN. Versao fixa do ReportGenerator.
+      - name: Instalar ReportGenerator
+        run: dotnet tool install --global dotnet-reportgenerator-globaltool --version 5.5.7
+
+      - name: Gate de cobertura (linhas >= 80%)
+        run: |
+          reportgenerator "-reports:**/coverage.opencover.xml" "-targetdir:coverage-report" \
+            "-reporttypes:JsonSummary;MarkdownSummaryGithub"
+          cat coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+          cobertura=$(jq -r '.summary.linecoverage' coverage-report/Summary.json)
+          echo "Cobertura de linhas: ${cobertura}% (minimo: 80%)"
+          if ! awk -v c="$cobertura" 'BEGIN { exit !(c >= 80) }'; then
+            echo "::error::Cobertura de linhas ${cobertura}% abaixo do minimo de 80%."
+            exit 1
+          fi
 
   # A conta e uma AWS Academy Learner Lab - nao permite IAM role/OIDC, entao autentica com as
   # tres credenciais de sessao temporarias, renovadas manualmente a cada sessao do laboratorio.
