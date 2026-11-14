@@ -353,7 +353,7 @@ migrations.
   O run da `main` aparece como falho: o job de imagem falha ao carregar as credenciais de sessão da AWS
   Academy e o deploy é pulado; o `Build & Test` (com o gate de cobertura) está verde — ver
   [Deploy no EKS](#deploy-no-eks-e-limitação-da-aws-academy).
-- <!-- sonarcloud-link -->SonarCloud: link público do projeto a ser preenchido quando a análise for configurada.
+- SonarCloud: [análise do projeto](https://sonarcloud.io/project/overview?id=gabrielMauad_oficina-mecanica-pagamento).
 
 ## Documentação da API (OpenAPI/Scalar)
 
