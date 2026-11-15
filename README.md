@@ -349,10 +349,7 @@ ficar abaixo de 80%** (passo "Gate de cobertura (linhas >= 80%)"). A métrica co
 migrations.
 
 - **Gate do CI: 93,8% de cobertura de linhas** (mínimo exigido: 80%), no run da `main` do commit
-  `65f6633`: [run 43552027438](https://github.com/gabrielMauad/oficina-mecanica-pagamento/actions/runs/43552027438).
-  O run da `main` aparece como falho: o job de imagem falha ao carregar as credenciais de sessão da AWS
-  Academy e o deploy é pulado; o `Build & Test` (com o gate de cobertura) está verde — ver
-  [Deploy no EKS](#deploy-no-eks-e-limitação-da-aws-academy).
+  `b31b6d9`: [run 43663042203](https://github.com/gabrielMauad/oficina-mecanica-pagamento/actions/runs/43663042203).
 - SonarCloud: [análise do projeto](https://sonarcloud.io/project/overview?id=gabrielMauad_oficina-mecanica-pagamento).
 
 ## Documentação da API (OpenAPI/Scalar)
