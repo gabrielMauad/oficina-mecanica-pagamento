@@ -17,6 +17,22 @@ public interface IPagamentoGateway
     /// </summary>
     Task<bool> AtualizarSePendente(PagamentoEntity pagamento, CancellationToken ct = default);
 
+    /// <summary>
+    /// Registra que o orçamento foi cancelado antes de existir pagamento dele, para que a criação
+    /// posterior nasça cancelada. Condicional à chave do pagamento do orçamento estar livre; devolve
+    /// <c>false</c> quando já existe pagamento (ou registro) dele.
+    /// </summary>
+    Task<bool> RegistrarCancelamento(Guid ordemServicoId, Guid orcamentoId, string motivo, CancellationToken ct = default);
+
+    /// <summary>Motivo do cancelamento registrado antes da criação do pagamento do orçamento, ou <c>null</c>.</summary>
+    Task<string?> ObterMotivoCancelamentoRegistrado(Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Grava o pagamento (já cancelado) no lugar do registro de cancelamento do orçamento. Devolve
+    /// <c>false</c> quando o registro não existe mais (outra entrega do mesmo evento já o substituiu).
+    /// </summary>
+    Task<bool> SubstituirCancelamentoRegistrado(PagamentoEntity pagamento, CancellationToken ct = default);
+
     Task<PagamentoEntity?> ObterPorOrdemServicoEOrcamento(Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default);
 
     /// <summary>Pagamento ainda <see cref="StatusPagamento.Pendente"/> da ordem de serviço, ou <c>null</c>.</summary>

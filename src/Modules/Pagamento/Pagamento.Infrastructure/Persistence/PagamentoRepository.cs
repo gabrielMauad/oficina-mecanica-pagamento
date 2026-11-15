@@ -65,8 +65,65 @@ public sealed class PagamentoRepository : IPagamentoRepository
         }
     }
 
+    public async Task<bool> RegistrarCancelamento(
+        Guid ordemServicoId, Guid orcamentoId, string motivo, DateTime registradoEm, CancellationToken ct = default)
+    {
+        // Mesma condição de Adicionar: o marcador só ocupa a chave se ela estiver livre. Assim, se a
+        // criação do pagamento e este registro disputam a chave, exatamente um vence.
+        try
+        {
+            await _dynamoDb.PutItemAsync(new PutItemRequest
+            {
+                TableName = _tabela,
+                Item = PagamentoItemMapper.ToItemMarcadorCancelamento(ordemServicoId, orcamentoId, motivo, registradoEm),
+                ConditionExpression = $"attribute_not_exists({PagamentoItemMapper.OrdemServicoId})"
+            }, ct);
+            return true;
+        }
+        catch (ConditionalCheckFailedException)
+        {
+            return false;
+        }
+    }
+
+    public async Task<string?> ObterMotivoCancelamentoRegistrado(
+        Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default)
+    {
+        var item = await ObterItem(ordemServicoId, orcamentoId, ct);
+        return item is not null && PagamentoItemMapper.EhMarcadorCancelamento(item)
+            ? item[PagamentoItemMapper.MotivoRecusa].S
+            : null;
+    }
+
+    public async Task<bool> SubstituirCancelamentoRegistrado(PagamentoRecord record, CancellationToken ct = default)
+    {
+        try
+        {
+            await _dynamoDb.PutItemAsync(new PutItemRequest
+            {
+                TableName = _tabela,
+                Item = PagamentoItemMapper.ToItem(record),
+                ConditionExpression = $"attribute_exists({PagamentoItemMapper.MarcadorCancelamento})"
+            }, ct);
+            return true;
+        }
+        catch (ConditionalCheckFailedException)
+        {
+            return false;
+        }
+    }
+
     public async Task<PagamentoRecord?> ObterPorOrdemServicoEOrcamento(
         Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default)
+    {
+        var item = await ObterItem(ordemServicoId, orcamentoId, ct);
+        return item is null || PagamentoItemMapper.EhMarcadorCancelamento(item)
+            ? null
+            : PagamentoItemMapper.ToRecord(item);
+    }
+
+    private async Task<Dictionary<string, AttributeValue>?> ObterItem(
+        Guid ordemServicoId, Guid orcamentoId, CancellationToken ct)
     {
         var response = await _dynamoDb.GetItemAsync(new GetItemRequest
         {
@@ -79,7 +136,7 @@ public sealed class PagamentoRepository : IPagamentoRepository
             ConsistentRead = true
         }, ct);
 
-        return response.Item is { Count: > 0 } ? PagamentoItemMapper.ToRecord(response.Item) : null;
+        return response.Item is { Count: > 0 } ? response.Item : null;
     }
 
     public async Task<IReadOnlyList<PagamentoRecord>> ListarPorOrdemServico(
@@ -102,7 +159,9 @@ public sealed class PagamentoRepository : IPagamentoRepository
                 ExclusiveStartKey = paginaSeguinte
             }, ct);
 
-            records.AddRange(response.Items.Select(PagamentoItemMapper.ToRecord));
+            records.AddRange(response.Items
+                .Where(item => !PagamentoItemMapper.EhMarcadorCancelamento(item))
+                .Select(PagamentoItemMapper.ToRecord));
             paginaSeguinte = response.LastEvaluatedKey is { Count: > 0 } ? response.LastEvaluatedKey : null;
         }
         while (paginaSeguinte is not null);

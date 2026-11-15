@@ -35,6 +35,23 @@ public sealed class PagamentoGateway : IPagamentoGateway
         return true;
     }
 
+    public Task<bool> RegistrarCancelamento(
+        Guid ordemServicoId, Guid orcamentoId, string motivo, CancellationToken ct = default) =>
+        _repository.RegistrarCancelamento(ordemServicoId, orcamentoId, motivo, DateTime.UtcNow, ct);
+
+    public Task<string?> ObterMotivoCancelamentoRegistrado(
+        Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default) =>
+        _repository.ObterMotivoCancelamentoRegistrado(ordemServicoId, orcamentoId, ct);
+
+    public async Task<bool> SubstituirCancelamentoRegistrado(PagamentoEntity pagamento, CancellationToken ct = default)
+    {
+        if (!await _repository.SubstituirCancelamentoRegistrado(PagamentoMapper.ToRecord(pagamento), ct))
+            return false;
+
+        _collector.Registrar(pagamento);
+        return true;
+    }
+
     public async Task<PagamentoEntity?> ObterPorOrdemServicoEOrcamento(
         Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default)
     {

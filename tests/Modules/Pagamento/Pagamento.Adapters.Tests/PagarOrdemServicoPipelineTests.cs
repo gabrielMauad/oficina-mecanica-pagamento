@@ -268,6 +268,16 @@ public class PagarOrdemServicoPipelineTests
             return Task.FromResult(true);
         }
 
+        public Task<bool> RegistrarCancelamento(
+            Guid ordemServicoId, Guid orcamentoId, string motivo, DateTime registradoEm, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<string?> ObterMotivoCancelamentoRegistrado(Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default) =>
+            Task.FromResult<string?>(null);
+
+        public Task<bool> SubstituirCancelamentoRegistrado(PagamentoRecord record, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
         public Task<PagamentoRecord?> ObterPorOrdemServicoEOrcamento(Guid ordemServicoId, Guid orcamentoId, CancellationToken ct = default) =>
             Task.FromResult(_dados.GetValueOrDefault((ordemServicoId, orcamentoId)));
 

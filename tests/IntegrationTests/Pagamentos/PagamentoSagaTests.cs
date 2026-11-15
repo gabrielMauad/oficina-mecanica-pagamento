@@ -259,7 +259,7 @@ public class PagamentoSagaTests(PagamentoWebApplicationFactory factory)
         Assert.Equal("Estoque insuficiente", pagamento.MotivoRecusa);
     }
 
-    [Fact(DisplayName = "EstoqueBaixaFalhou sem pagamento da ordem → nada acontece")]
+    [Fact(DisplayName = "EstoqueBaixaFalhou sem pagamento da ordem → só registra o cancelamento: nenhum pagamento é listado nem evento publicado")]
     public async Task EstoqueBaixaFalhou_SemPagamento_NaoDeveFazerNada()
     {
         // Arrange
@@ -276,6 +276,74 @@ public class PagamentoSagaTests(PagamentoWebApplicationFactory factory)
             m.Context.Message.OrdemServicoId == ordemServicoId));
         Assert.False(await factory.Harness.Published.Any<PagamentoRecusadoIntegrationEvent>(m =>
             m.Context.Message.OrdemServicoId == ordemServicoId));
+    }
+
+    [Fact(DisplayName = "Ordem invertida — EstoqueBaixaFalhou antes de OrcamentoAprovado → pagamento nasce Cancelado, nunca Pendente, e pagar dá 404")]
+    public async Task EstoqueBaixaFalhou_AntesDeOrcamentoAprovado_DeveCriarPagamentoCancelado()
+    {
+        // Arrange
+        var ordemServicoId = Guid.NewGuid();
+        var orcamentoId = Guid.NewGuid();
+        var clienteId = Guid.NewGuid();
+        using var cliente = factory.CreateClienteClient(clienteId);
+        var falhaId = await PublicarEstoqueBaixaFalhouAsync(factory, ordemServicoId, orcamentoId, "Estoque insuficiente");
+        await AguardarConsumoAsync(falhaId);
+        Assert.Empty(await ListarAsync(cliente, ordemServicoId));
+
+        // Act
+        await PublicarOrcamentoAprovadoAsync(factory, ordemServicoId, orcamentoId, clienteId, 150m);
+        var pagamentos = await AguardarPagamentosAsync(cliente, ordemServicoId, 1);
+
+        // Assert
+        var pagamento = Assert.Single(pagamentos);
+        Assert.Equal("Cancelado", pagamento.Status);
+        Assert.Equal("Estoque insuficiente", pagamento.MotivoRecusa);
+        Assert.Equal(orcamentoId, pagamento.OrcamentoId);
+        Assert.Equal(150m, pagamento.Valor);
+        Assert.Equal(HttpStatusCode.NotFound, (await PagarAsync(cliente, ordemServicoId, "APRO")).StatusCode);
+        Assert.False(await factory.Harness.Published.Any<PagamentoAprovadoIntegrationEvent>(m =>
+            m.Context.Message.OrdemServicoId == ordemServicoId));
+    }
+
+    [Fact(DisplayName = "Ordem direta — OrcamentoAprovado antes de EstoqueBaixaFalhou → mesmo resultado: pagamento Cancelado e pagar dá 404")]
+    public async Task OrcamentoAprovado_AntesDeEstoqueBaixaFalhou_DeveTerminarCancelado()
+    {
+        // Arrange
+        var (ordemServicoId, orcamentoId, clienteId) = await CriarPendenteAsync(factory, 150m);
+        using var cliente = factory.CreateClienteClient(clienteId);
+
+        // Act
+        await PublicarEstoqueBaixaFalhouAsync(factory, ordemServicoId, orcamentoId, "Estoque insuficiente");
+        var pagamentos = await AguardarStatusAsync(cliente, ordemServicoId, "Cancelado");
+
+        // Assert
+        var pagamento = Assert.Single(pagamentos);
+        Assert.Equal("Cancelado", pagamento.Status);
+        Assert.Equal("Estoque insuficiente", pagamento.MotivoRecusa);
+        Assert.Equal(HttpStatusCode.NotFound, (await PagarAsync(cliente, ordemServicoId, "APRO")).StatusCode);
+    }
+
+    [Fact(DisplayName = "Ordem invertida com reentrega de OrcamentoAprovado → o pagamento continua único e Cancelado")]
+    public async Task OrdemInvertida_OrcamentoAprovadoReentregue_DeveContinuarCancelado()
+    {
+        // Arrange
+        var ordemServicoId = Guid.NewGuid();
+        var orcamentoId = Guid.NewGuid();
+        var clienteId = Guid.NewGuid();
+        using var cliente = factory.CreateClienteClient(clienteId);
+        var falhaId = await PublicarEstoqueBaixaFalhouAsync(factory, ordemServicoId, orcamentoId);
+        await AguardarConsumoAsync(falhaId);
+        await PublicarOrcamentoAprovadoAsync(factory, ordemServicoId, orcamentoId, clienteId, 150m);
+        var primeiro = Assert.Single(await AguardarPagamentosAsync(cliente, ordemServicoId, 1));
+
+        // Act
+        await PublicarOrcamentoAprovadoAsync(factory, ordemServicoId, orcamentoId, clienteId, 150m);
+        await AguardarConsumoDasDuasEntregasAsync(ordemServicoId);
+
+        // Assert
+        var depois = Assert.Single(await ListarAsync(cliente, ordemServicoId));
+        Assert.Equal(primeiro.PagamentoId, depois.PagamentoId);
+        Assert.Equal("Cancelado", depois.Status);
     }
 
     [Fact(DisplayName = "EstoqueBaixaFalhou de outro orçamento da mesma ordem ou com pagamento já Aprovado → o pagamento não muda")]

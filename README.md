@@ -33,7 +33,8 @@ serviços (`Domain` → `Application` → `Adapters` → `Infrastructure`/`Web`;
 - Publicar `PagamentoAprovado` (a OS passa a `EmExecucao`) ou `PagamentoRecusado` (compensação: a OS
   rejeita o orçamento e as peças são estornadas).
 - Cancelar o pagamento `Pendente` quando a baixa de estoque do mesmo orçamento falha
-  (`EstoqueBaixaFalhou`), para que não se cobre um serviço que não será executado.
+  (`EstoqueBaixaFalhou`), para que não se cobre um serviço que não será executado. Vale em qualquer
+  ordem de chegada dos dois eventos: se a falha chega antes da aprovação, o pagamento já nasce `Cancelado`.
 - Listar os pagamentos de uma OS.
 
 O status do pagamento (`Pendente` → `Aprovado` | `Recusado` | `Cancelado`) é interno a este serviço: a OS
@@ -208,6 +209,13 @@ concorrentes do mesmo evento criem o pagamento duas vezes. `AtualizarSePendente`
 `Status = Pendente`: só uma entre duas resoluções concorrentes (dois `/pagar`, ou um `/pagar` e um
 cancelamento) vence; a outra recebe `false` e não publica evento.
 
+**Cancelamento que chega antes do pagamento.** Quando `EstoqueBaixaFalhou` chega antes de existir pagamento
+do orçamento, o serviço grava, com `attribute_not_exists` na mesma chave (OS + orçamento), um **marcador de
+cancelamento**: item sem `PagamentoId`, `ClienteId` e `Valor`, com `Status = Cancelado`, o motivo em
+`MotivoRecusa` e `MarcadorCancelamento = true`. Como ocupa a chave do pagamento, a criação e o cancelamento
+disputam a mesma chave e só um vence. O marcador não é um pagamento: não aparece em `GET` nem é pagável, e é
+trocado pelo pagamento `Cancelado` quando o `OrcamentoAprovado` é consumido.
+
 **Por que NoSQL aqui.** O sistema precisa de um banco relacional e de um NoSQL, e o Pagamento é o serviço
 que se encaixa no segundo:
 
@@ -230,12 +238,13 @@ propagado pelas mensagens (`AddSource("MassTransit")`).
 | Evento | Direção | Fila | Efeito |
 |---|---|---|---|
 | `OrcamentoAprovadoIntegrationEvent` | consome (de `ordens-servico`) | `pagamento-orcamento-aprovado` | cria o pagamento `Pendente` com o `ClienteId` e o `ValorTotal` do evento; **idempotente** |
-| `EstoqueBaixaFalhouIntegrationEvent` | consome (de `pecas-insumos`) | `pagamento-estoque-baixa-falhou` | se houver pagamento `Pendente` daquela OS e orçamento → `Cancelado`, **sem publicar evento**; senão, só log |
+| `EstoqueBaixaFalhouIntegrationEvent` | consome (de `pecas-insumos`) | `pagamento-estoque-baixa-falhou` | se houver pagamento `Pendente` daquela OS e orçamento → `Cancelado`, **sem publicar evento**; se ainda não houver pagamento, registra o cancelamento e o pagamento é criado já `Cancelado`; senão, só log |
 | `PagamentoAprovadoIntegrationEvent` | publica (para `ordens-servico`) | — | a OS `AguardandoAprovacao` passa a `EmExecucao`, só se o orçamento do evento estiver `Aprovado` |
 | `PagamentoRecusadoIntegrationEvent` | publica (para `ordens-servico`) | — | compensação: o orçamento `Aprovado` passa a `Rejeitado` e a OS publica `OrcamentoRejeitado` (estorno das peças) |
 
 **Criação ao consumir `OrcamentoAprovado`.** O `CriarPagamentoHandler` consulta (OS, orçamento): se já
-existe, só registra log e devolve o existente (reentrega); senão cria o `Pendente`. Se duas entregas
+existe, só registra log e devolve o existente (reentrega); se o cancelamento do orçamento já estava registrado,
+cria o pagamento já `Cancelado`; senão cria o `Pendente`. Se duas entregas
 concorrentes disputam a criação, a gravação condicional faz a perdedora lançar exceção, e o retry do
 consumer a reprocessa e cai no caso "já existe".
 
@@ -243,8 +252,10 @@ consumer a reprocessa e cai no caso "já existe".
 aprovação do cliente. Se o cliente aprovou antes de a falha chegar (pagamento `Pendente` criado), a OS
 rejeita o orçamento e o pagamento não pode mais ser cobrado: o serviço busca o pagamento da OS e do
 orçamento do evento; se estiver `Pendente`, passa a `Cancelado` (o motivo da falha fica em `motivoRecusa`)
-sem publicar evento algum, pois a OS já conhece a falha. Se não existir pagamento (caso comum) ou ele já
-não estiver `Pendente` (reentrega, pagamento já resolvido), só registra log. Um pagamento `Cancelado` não é
+sem publicar evento algum, pois a OS já conhece a falha. Se ainda não existir pagamento (a falha chegou antes
+de `OrcamentoAprovado`), o cancelamento fica registrado (ver "Escritas condicionais") e o pagamento nasce
+`Cancelado`; se ele já não estiver `Pendente` (reentrega, pagamento já resolvido), só registra log. Um
+pagamento `Cancelado` não é
 pagável: `POST .../pagar` responde `404` e o `GET` o lista com status `Cancelado`.
 
 **Publicação de `PagamentoAprovado`/`PagamentoRecusado`.** `Aprovar`/`Recusar` no agregado levantam um

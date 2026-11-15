@@ -22,6 +22,29 @@ internal static class PagamentoItemMapper
     public const string CriadoEm = "CriadoEm";
     public const string AtualizadoEm = "AtualizadoEm";
 
+    /// <summary>
+    /// Presente só no marcador de cancelamento: item que registra "o orçamento foi cancelado antes de o
+    /// pagamento existir". Não é um pagamento (não tem PagamentoId, ClienteId nem Valor) e ocupa a chave
+    /// do pagamento do orçamento, de modo que a criação e o cancelamento disputam a mesma chave.
+    /// </summary>
+    public const string MarcadorCancelamento = "MarcadorCancelamento";
+
+    public static bool EhMarcadorCancelamento(IReadOnlyDictionary<string, AttributeValue> item) =>
+        item.ContainsKey(MarcadorCancelamento);
+
+    public static Dictionary<string, AttributeValue> ToItemMarcadorCancelamento(
+        Guid ordemServicoId, Guid orcamentoId, string motivo, DateTime registradoEm) =>
+        new()
+        {
+            [OrdemServicoId] = new() { S = ordemServicoId.ToString() },
+            [OrcamentoId] = new() { S = orcamentoId.ToString() },
+            [Status] = new() { S = "Cancelado" },
+            [MotivoRecusa] = new() { S = motivo },
+            [MarcadorCancelamento] = new() { BOOL = true },
+            [CriadoEm] = new() { S = registradoEm.ToString("O", CultureInfo.InvariantCulture) },
+            [AtualizadoEm] = new() { S = registradoEm.ToString("O", CultureInfo.InvariantCulture) }
+        };
+
     public static Dictionary<string, AttributeValue> ToItem(PagamentoRecord record)
     {
         var item = new Dictionary<string, AttributeValue>

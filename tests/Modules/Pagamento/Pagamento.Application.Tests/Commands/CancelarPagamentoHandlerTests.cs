@@ -73,6 +73,74 @@ public class CancelarPagamentoHandlerTests
             g => g.AtualizarSePendente(It.IsAny<PagamentoEntity>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Fact(DisplayName = "Sem pagamento do orçamento — registra o cancelamento com o motivo, para o pagamento nascer cancelado")]
+    public async Task Handle_SemPagamento_DeveRegistrarCancelamento()
+    {
+        // Arrange
+        _gatewayMock
+            .Setup(g => g.RegistrarCancelamento(_ordemServicoId, _orcamentoId, "Estoque insuficiente", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        _gatewayMock
+            .Setup(g => g.ObterPorOrdemServicoEOrcamento(_ordemServicoId, _orcamentoId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((PagamentoEntity?)null);
+
+        // Act
+        var result = await Cancelar("Estoque insuficiente");
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value);
+        _gatewayMock.Verify(
+            g => g.RegistrarCancelamento(_ordemServicoId, _orcamentoId, "Estoque insuficiente", It.IsAny<CancellationToken>()),
+            Times.Once);
+        _gatewayMock.Verify(
+            g => g.AtualizarSePendente(It.IsAny<PagamentoEntity>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact(DisplayName = "Corrida com a criação — o registro perde a chave para o pagamento Pendente recém-criado, que é cancelado")]
+    public async Task Handle_CriacaoVenceACorrida_DeveCancelarOPendenteRecemCriado()
+    {
+        // Arrange — a primeira leitura não vê o pagamento; ele aparece antes da gravação do registro
+        var pendente = PagamentoEntity.Criar(_ordemServicoId, _orcamentoId, Guid.NewGuid(), 250m).Value;
+        _gatewayMock
+            .SetupSequence(g => g.ObterPorOrdemServicoEOrcamento(_ordemServicoId, _orcamentoId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((PagamentoEntity?)null)
+            .ReturnsAsync(pendente);
+        _gatewayMock
+            .Setup(g => g.RegistrarCancelamento(_ordemServicoId, _orcamentoId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        // Act
+        var result = await Cancelar("Estoque insuficiente");
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value);
+        Assert.Equal(StatusPagamento.Cancelado, pendente.Status);
+        _gatewayMock.Verify(g => g.AtualizarSePendente(pendente, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact(DisplayName = "Cancelamento já registrado (reentrega) — nada é gravado")]
+    public async Task Handle_CancelamentoJaRegistrado_NaoDeveFazerNada()
+    {
+        // Arrange
+        _gatewayMock
+            .Setup(g => g.ObterPorOrdemServicoEOrcamento(_ordemServicoId, _orcamentoId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((PagamentoEntity?)null);
+        _gatewayMock
+            .Setup(g => g.RegistrarCancelamento(_ordemServicoId, _orcamentoId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        // Act
+        var result = await Cancelar();
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value);
+        _gatewayMock.Verify(
+            g => g.AtualizarSePendente(It.IsAny<PagamentoEntity>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Theory(DisplayName = "Pagamento já resolvido ou cancelado (reentrega) — sucesso sem efeito, nada é gravado")]
     [InlineData(StatusPagamento.Aprovado)]
     [InlineData(StatusPagamento.Recusado)]
