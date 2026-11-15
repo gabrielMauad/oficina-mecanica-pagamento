@@ -148,4 +148,55 @@ public class PagamentoGatewayTests
 
         Assert.Equal([primeiro.Id, segundo.Id], lista.Select(p => p.Id));
     }
+
+    [Fact(DisplayName = "RegistrarCancelamento — delega ao repositório com o motivo e devolve o resultado da gravação condicional")]
+    public async Task RegistrarCancelamento_DeveDelegarAoRepositorio()
+    {
+        var orcamentoId = Guid.NewGuid();
+        _repositoryMock
+            .Setup(r => r.RegistrarCancelamento(_ordemServicoId, orcamentoId, "Estoque insuficiente", It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        Assert.True(await _gateway.RegistrarCancelamento(_ordemServicoId, orcamentoId, "Estoque insuficiente"));
+    }
+
+    [Fact(DisplayName = "ObterMotivoCancelamentoRegistrado — delega ao repositório")]
+    public async Task ObterMotivoCancelamentoRegistrado_DeveDelegarAoRepositorio()
+    {
+        var orcamentoId = Guid.NewGuid();
+        _repositoryMock
+            .Setup(r => r.ObterMotivoCancelamentoRegistrado(_ordemServicoId, orcamentoId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync("Estoque insuficiente");
+
+        Assert.Equal("Estoque insuficiente", await _gateway.ObterMotivoCancelamentoRegistrado(_ordemServicoId, orcamentoId));
+    }
+
+    [Fact(DisplayName = "SubstituirCancelamentoRegistrado — persiste o record do pagamento cancelado")]
+    public async Task SubstituirCancelamentoRegistrado_DevePersistir()
+    {
+        var pagamento = PagamentoEntity.Criar(_ordemServicoId, Guid.NewGuid(), _clienteId, 100m).Value;
+        pagamento.Cancelar("Estoque insuficiente");
+        _repositoryMock
+            .Setup(r => r.SubstituirCancelamentoRegistrado(It.IsAny<PagamentoRecord>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var gravou = await _gateway.SubstituirCancelamentoRegistrado(pagamento);
+
+        Assert.True(gravou);
+        _repositoryMock.Verify(r => r.SubstituirCancelamentoRegistrado(
+            It.Is<PagamentoRecord>(x => x.PagamentoId == pagamento.Id.Value && x.Status == "Cancelado"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact(DisplayName = "SubstituirCancelamentoRegistrado — gravação condicional perdida devolve false")]
+    public async Task SubstituirCancelamentoRegistrado_CondicaoFalha_DeveDevolverFalse()
+    {
+        var pagamento = PagamentoEntity.Criar(_ordemServicoId, Guid.NewGuid(), _clienteId, 100m).Value;
+        pagamento.Cancelar("Estoque insuficiente");
+        _repositoryMock
+            .Setup(r => r.SubstituirCancelamentoRegistrado(It.IsAny<PagamentoRecord>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        Assert.False(await _gateway.SubstituirCancelamentoRegistrado(pagamento));
+    }
 }

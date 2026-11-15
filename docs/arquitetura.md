@@ -31,6 +31,7 @@ stateDiagram-v2
     Pendente --> Aprovado: POST /pagar com titular APRO
     Pendente --> Recusado: POST /pagar com outro titular, como OTHE
     Pendente --> Cancelado: EstoqueBaixaFalhou consumido
+    [*] --> Cancelado: OrcamentoAprovado consumido depois de EstoqueBaixaFalhou
     Aprovado --> [*]
     Recusado --> [*]
     Cancelado --> [*]
@@ -48,6 +49,10 @@ evento algum, porque decorre de um evento que a OS já conhece.
 3. O handler consulta (OS, orçamento): se já existe, registra log e devolve o existente (reentrega); senão
    cria o agregado `Pendente` e o grava com `attribute_not_exists` na chave, de modo que duas entregas
    concorrentes não criam dois pagamentos — a perdedora lança exceção e o retry cai no caso "já existe".
+4. Se o cancelamento do orçamento já foi registrado (Fluxo 3, passo 4), o pagamento é criado já
+   `Cancelado`, com o motivo registrado, no lugar do marcador (gravação condicional à existência dele), e
+   nunca `Pendente`. Se o marcador aparecer entre a consulta e a gravação, a gravação do `Pendente` falha
+   pela mesma condição e o retry do consumer passa a encontrá-lo.
 
 ## Fluxo 2 — pagar (`POST .../pagar`)
 
@@ -94,10 +99,21 @@ sequenceDiagram
 1. O `pecas-insumos` publica `EstoqueBaixaFalhou` quando a baixa do orçamento não é possível.
 2. O `EstoqueBaixaFalhouConsumer` (fila `pagamento-estoque-baixa-falhou`) delega ao
    `CancelarPagamentoQuandoEstoqueBaixaFalhou` → `CancelarPagamentoCommand`.
-3. Sem pagamento (caso comum: o cliente ainda não aprovou) ou pagamento que já não está `Pendente`
-   (reentrega, já resolvido): só log. Com `Pendente`: `Cancelar(motivo)` e gravação condicional
-   (`Status = Pendente`); se uma chamada concorrente resolveu antes, o cancelamento é ignorado com log.
-4. Nenhum evento é publicado: a OS já rejeitou o orçamento ao receber a mesma falha.
+3. Pagamento que já não está `Pendente` (reentrega, já resolvido): só log. Com `Pendente`:
+   `Cancelar(motivo)` e gravação condicional (`Status = Pendente`); se uma chamada concorrente resolveu
+   antes, o cancelamento é ignorado com log.
+4. **Sem pagamento ainda** (a falha chegou antes de `OrcamentoAprovado`, pois os dois eventos vêm por filas
+   distintas e sem ordem): o handler grava um **marcador de cancelamento** na chave (OS, orçamento) com
+   `attribute_not_exists`, a mesma condição de `Adicionar`. Se o marcador vence, o Fluxo 1 o encontra e cria
+   o pagamento já `Cancelado`; se a criação vence a disputa pela chave, a gravação do marcador falha, o
+   handler relê o pagamento recém-criado (`Pendente`) e o cancela pelo caminho normal.
+5. Nenhum evento é publicado: a OS já rejeitou o orçamento ao receber a mesma falha.
+
+O marcador é um item na própria tabela de pagamentos, com a chave do pagamento do orçamento, `Status =
+Cancelado`, o motivo em `MotivoRecusa` e o atributo `MarcadorCancelamento = true`; não tem `PagamentoId`,
+`ClienteId` nem `Valor`. Como ocupa a mesma chave, criação e cancelamento nunca coexistem para o mesmo
+orçamento, sem transação. O marcador não é um pagamento: leituras por chave e a listagem da OS o ignoram, e
+ele é trocado pelo pagamento `Cancelado` assim que o `OrcamentoAprovado` é consumido.
 
 ## Decisões de projeto
 

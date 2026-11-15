@@ -44,6 +44,34 @@ public class PagamentoItemMapperTests
         Assert.False(item.ContainsKey("MercadoPagoPaymentId"));
     }
 
+    [Fact(DisplayName = "Marcador de cancelamento — ocupa a chave do pagamento, carrega o motivo e não tem dados de pagamento")]
+    public void ToItemMarcadorCancelamento_DeveOcuparAChaveSemDadosDePagamento()
+    {
+        // Arrange
+        var ordemServicoId = Guid.NewGuid();
+        var orcamentoId = Guid.NewGuid();
+
+        // Act
+        var item = PagamentoItemMapper.ToItemMarcadorCancelamento(
+            ordemServicoId, orcamentoId, "Estoque insuficiente", new DateTime(2026, 11, 10, 8, 30, 0, DateTimeKind.Utc));
+
+        // Assert
+        Assert.Equal(ordemServicoId.ToString(), item["OrdemServicoId"].S);
+        Assert.Equal(orcamentoId.ToString(), item["OrcamentoId"].S);
+        Assert.Equal("Estoque insuficiente", item["MotivoRecusa"].S);
+        Assert.Equal("Cancelado", item["Status"].S);
+        Assert.True(PagamentoItemMapper.EhMarcadorCancelamento(item));
+        Assert.False(item.ContainsKey("PagamentoId"));
+        Assert.False(item.ContainsKey("ClienteId"));
+        Assert.False(item.ContainsKey("Valor"));
+    }
+
+    [Fact(DisplayName = "Marcador de cancelamento — um item de pagamento não é marcador")]
+    public void EhMarcadorCancelamento_ItemDePagamento_DeveSerFalso()
+    {
+        Assert.False(PagamentoItemMapper.EhMarcadorCancelamento(PagamentoItemMapper.ToItem(NovoRecord())));
+    }
+
     [Theory(DisplayName = "Item — ida e volta preserva o record")]
     [InlineData("Pendente", null, null)]
     [InlineData("Aprovado", null, 4242L)]

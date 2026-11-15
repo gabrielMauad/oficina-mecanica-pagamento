@@ -176,4 +176,178 @@ public class PagamentoRepositoryTests(PagamentoWebApplicationFactory factory)
 
         Assert.Empty(await repositorio.ListarPorOrdemServico(Guid.NewGuid()));
     }
+
+    [Fact(DisplayName = "RegistrarCancelamento — chave livre grava o marcador, que não é um pagamento (não é obtido nem listado)")]
+    public async Task RegistrarCancelamento_ChaveLivre_DeveGravarMarcadorQueNaoEPagamento()
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var ordemServicoId = Guid.NewGuid();
+        var orcamentoId = Guid.NewGuid();
+
+        // Act
+        var gravou = await repositorio.RegistrarCancelamento(ordemServicoId, orcamentoId, "Estoque insuficiente", DateTime.UtcNow);
+
+        // Assert
+        Assert.True(gravou);
+        Assert.Equal("Estoque insuficiente", await repositorio.ObterMotivoCancelamentoRegistrado(ordemServicoId, orcamentoId));
+        Assert.Null(await repositorio.ObterPorOrdemServicoEOrcamento(ordemServicoId, orcamentoId));
+        Assert.Empty(await repositorio.ListarPorOrdemServico(ordemServicoId));
+    }
+
+    [Fact(DisplayName = "RegistrarCancelamento — chave já ocupada por um pagamento devolve false e não o sobrescreve")]
+    public async Task RegistrarCancelamento_ComPagamento_NaoDeveSobrescrever()
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var record = NovoRecord(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);
+        await repositorio.Adicionar(record);
+
+        // Act
+        var gravou = await repositorio.RegistrarCancelamento(
+            record.OrdemServicoId, record.OrcamentoId, "Estoque insuficiente", DateTime.UtcNow);
+
+        // Assert
+        Assert.False(gravou);
+        Assert.Equal(record, await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId));
+        Assert.Null(await repositorio.ObterMotivoCancelamentoRegistrado(record.OrdemServicoId, record.OrcamentoId));
+    }
+
+    [Fact(DisplayName = "RegistrarCancelamento — repetido devolve false e preserva o primeiro motivo")]
+    public async Task RegistrarCancelamento_Repetido_DevePreservarOPrimeiro()
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var ordemServicoId = Guid.NewGuid();
+        var orcamentoId = Guid.NewGuid();
+        await repositorio.RegistrarCancelamento(ordemServicoId, orcamentoId, "primeiro", DateTime.UtcNow);
+
+        // Act
+        var gravou = await repositorio.RegistrarCancelamento(ordemServicoId, orcamentoId, "segundo", DateTime.UtcNow);
+
+        // Assert
+        Assert.False(gravou);
+        Assert.Equal("primeiro", await repositorio.ObterMotivoCancelamentoRegistrado(ordemServicoId, orcamentoId));
+    }
+
+    [Fact(DisplayName = "Adicionar — chave ocupada por marcador de cancelamento falha e não cria pagamento Pendente")]
+    public async Task Adicionar_ComMarcador_DeveFalhar()
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var record = NovoRecord(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);
+        await repositorio.RegistrarCancelamento(record.OrdemServicoId, record.OrcamentoId, "Estoque insuficiente", DateTime.UtcNow);
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ConditionalCheckFailedException>(() => repositorio.Adicionar(record));
+        Assert.Null(await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId));
+        Assert.Equal("Estoque insuficiente", await repositorio.ObterMotivoCancelamentoRegistrado(record.OrdemServicoId, record.OrcamentoId));
+    }
+
+    [Fact(DisplayName = "AtualizarSePendente — marcador de cancelamento não é Pendente: devolve false")]
+    public async Task AtualizarSePendente_ComMarcador_DeveDevolverFalse()
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var record = NovoRecord(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);
+        await repositorio.RegistrarCancelamento(record.OrdemServicoId, record.OrcamentoId, "Estoque insuficiente", DateTime.UtcNow);
+
+        // Act
+        var gravou = await repositorio.AtualizarSePendente(record with { Status = "Aprovado" });
+
+        // Assert
+        Assert.False(gravou);
+        Assert.Null(await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId));
+    }
+
+    [Fact(DisplayName = "SubstituirCancelamentoRegistrado — troca o marcador pelo pagamento Cancelado; repetido devolve false")]
+    public async Task SubstituirCancelamentoRegistrado_DeveTrocarOMarcador()
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var record = NovoRecord(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow) with
+        {
+            Status = "Cancelado",
+            MotivoRecusa = "Estoque insuficiente"
+        };
+        await repositorio.RegistrarCancelamento(record.OrdemServicoId, record.OrcamentoId, "Estoque insuficiente", DateTime.UtcNow);
+
+        // Act
+        var primeira = await repositorio.SubstituirCancelamentoRegistrado(record);
+        var segunda = await repositorio.SubstituirCancelamentoRegistrado(record with { PagamentoId = Guid.NewGuid() });
+
+        // Assert
+        Assert.True(primeira);
+        Assert.False(segunda);
+        Assert.Equal(record, await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId));
+        Assert.Null(await repositorio.ObterMotivoCancelamentoRegistrado(record.OrdemServicoId, record.OrcamentoId));
+        Assert.Equal(record, Assert.Single(await repositorio.ListarPorOrdemServico(record.OrdemServicoId)));
+    }
+
+    [Fact(DisplayName = "SubstituirCancelamentoRegistrado — sem marcador devolve false e não cria o item")]
+    public async Task SubstituirCancelamentoRegistrado_SemMarcador_NaoDeveCriar()
+    {
+        // Arrange
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+        var record = NovoRecord(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow) with { Status = "Cancelado" };
+
+        // Act
+        var gravou = await repositorio.SubstituirCancelamentoRegistrado(record);
+
+        // Assert
+        Assert.False(gravou);
+        Assert.Null(await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId));
+    }
+
+    [Fact(DisplayName = "Corrida — Adicionar e RegistrarCancelamento concorrentes na mesma chave: exatamente um ocupa a chave, nunca os dois")]
+    public async Task AdicionarERegistrarCancelamento_Concorrentes_ExatamenteUmVence()
+    {
+        using var escopo = NovoEscopo();
+        var repositorio = escopo.ServiceProvider.GetRequiredService<IPagamentoRepository>();
+
+        for (var rodada = 0; rodada < 20; rodada++)
+        {
+            // Arrange
+            var record = NovoRecord(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);
+            using var largada = new ManualResetEventSlim(false);
+
+            // Act
+            var adicionar = Task.Run(async () =>
+            {
+                largada.Wait();
+                try
+                {
+                    await repositorio.Adicionar(record);
+                    return true;
+                }
+                catch (ConditionalCheckFailedException)
+                {
+                    return false;
+                }
+            });
+            var registrar = Task.Run(() =>
+            {
+                largada.Wait();
+                return repositorio.RegistrarCancelamento(
+                    record.OrdemServicoId, record.OrcamentoId, "Estoque insuficiente", DateTime.UtcNow);
+            });
+            largada.Set();
+            var adicionou = await adicionar;
+            var registrou = await registrar;
+
+            // Assert
+            Assert.NotEqual(adicionou, registrou);
+            var pagamento = await repositorio.ObterPorOrdemServicoEOrcamento(record.OrdemServicoId, record.OrcamentoId);
+            var motivo = await repositorio.ObterMotivoCancelamentoRegistrado(record.OrdemServicoId, record.OrcamentoId);
+            Assert.Equal(adicionou, pagamento is not null);
+            Assert.Equal(registrou, motivo is not null);
+        }
+    }
 }
